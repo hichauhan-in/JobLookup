@@ -1,0 +1,56 @@
+{
+  "name": "joblookup-bridge",
+  "displayName": "JobLookup Bridge",
+  "description": "Lets the local JobLookup app use your GitHub Copilot seat through VS Code's Language Model API.",
+  "version": "0.1.0",
+  "publisher": "joblookup",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "joblookupBridge.authorize",
+        "title": "JobLookup Bridge: Authorise Copilot Access",
+        "category": "JobLookup"
+      },
+      {
+        "command": "joblookupBridge.status",
+        "title": "JobLookup Bridge: Show Status",
+        "category": "JobLookup"
+      },
+      {
+        "command": "joblookupBridge.restart",
+        "title": "JobLookup Bridge: Restart Server",
+        "category": "JobLookup"
+      }
+    ],
+    "configuration": {
+      "title": "JobLookup Bridge",
+      "properties": {
+        "joblookupBridge.port": {
+          "type": "number",
+          "default": 8771,
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Port the bridge listens on (127.0.0.1 only). Use 0 to pick a free port automatically."
+        },
+        "joblookupBridge.modelFamily": {
+          "type": "string",
+          "default": "",
+          "description": "Preferred Copilot model family, e.g. gpt-4o-mini or claude-haiku-4.5. Leave empty and the bridge picks a fast, inexpensive model it can see."
+        },
+        "joblookupBridge.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the bridge automatically when VS Code opens."
+        }
+      }
+    }
+  }
+}

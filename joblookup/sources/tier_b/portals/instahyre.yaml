@@ -1,0 +1,28 @@
+# Instahyre.
+#
+# WARNING: Automated access is against the terms of service. Disabled until you
+# enable it and accept the notice on the Sources screen.
+
+key: instahyre
+name: Instahyre
+homepage: https://www.instahyre.com
+login_url: https://www.instahyre.com/login/
+description: India, curated and invitation-driven.
+page_size: 20
+
+search_url: >-
+  https://www.instahyre.com/search-jobs/?job_title={keywords}&city={location}&page={page}
+
+logged_out_markers:
+  - "form[name='loginForm']"
+  - "input#id_username"
+  - "a[href='/login/']"
+
+selectors:
+  card: "div.job-container, div.opportunity-card"
+  title: "a.job-title, h3.job-title"
+  company: "div.company-name, a.company-link"
+  location: "div.job-location, span.location"
+  summary: "div.job-description, div.opportunity-description"
+  posted: "div.posted-on, span.posted"
+  link: "a.job-title, a.opportunity-link"

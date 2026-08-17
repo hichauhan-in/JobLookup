@@ -1,0 +1,28 @@
+# Dice.
+#
+# WARNING: Automated access is against the terms of service. Disabled until you
+# enable it and accept the notice on the Sources screen.
+
+key: dice
+name: Dice
+homepage: https://www.dice.com
+login_url: https://www.dice.com/dashboard/login
+description: US technology contract and permanent roles.
+page_size: 20
+
+search_url: >-
+  https://www.dice.com/jobs?q={keywords}&location={location}&filters.postedDate={days}DAYS&page={page}
+
+logged_out_markers:
+  - "form[name='loginForm']"
+  - "input#email"
+  - "a[data-cy='login-link']"
+
+selectors:
+  card: "div[data-cy='search-result-card'], dhi-search-card"
+  title: "a[data-cy='card-title-link'], a.card-title-link"
+  company: "a[data-cy='search-result-company-name'], .card-company"
+  location: "span[data-cy='search-result-location'], .search-result-location"
+  summary: "div[data-cy='card-summary'], .card-description"
+  posted: "span[data-cy='card-posted-date'], .posted-date"
+  link: "a[data-cy='card-title-link'], a.card-title-link"

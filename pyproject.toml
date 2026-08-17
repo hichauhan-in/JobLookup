@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "joblookup"
+version = "0.1.0"
+description = "A job finder that builds a profile from your CVs, searches real job sources, and ranks the results with the AI model you already have."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+# The base install has to work on a locked-down corporate laptop with no GPU and
+# no paid API key, so everything heavy is an optional extra that the Settings
+# screen offers to install when it is actually wanted.
+dependencies = [
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+    "websockets>=12.0",
+    "pypdf>=4.2",
+    "python-docx>=1.1",
+]
+
+[project.optional-dependencies]
+# Faster and more accurate near-duplicate detection. Pure-Python fallback exists.
+fuzzy = ["rapidfuzz>=3.9"]
+# Only needed when a provider that can produce embeddings is selected.
+vectors = ["numpy>=1.26"]
+# Stores job-board API keys in Windows Credential Manager instead of a local file.
+secrets = ["keyring>=25.0"]
+# Logged-in portal scraping. Never installed unless a Tier B source is enabled.
+portals = ["playwright>=1.44"]
+# Templated DOCX output for tailored CVs.
+docs = ["docxtpl>=0.17"]
+# Unattended scheduled searches.
+schedule = ["apscheduler>=3.10"]
+dev = ["pytest>=8.2", "ruff>=0.5"]
+
+[project.scripts]
+joblookup = "joblookup.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["joblookup*"]
+
+[tool.setuptools.package-data]
+joblookup = ["web/**/*", "db/*.sql", "sources/tier_b/portals/*.yaml", "tailor/templates/*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# B008: FastAPI's File()/Form() defaults are the documented pattern.
+# SIM105: contextlib.suppress is slower than try/except/pass and these sit in
+#         event-publishing loops that run per subscriber per event.
+ignore = ["B008", "SIM105"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,31 @@
+# Indeed.
+#
+# WARNING: Indeed's terms prohibit scraping, and it has aggressive bot
+# detection. Expect to be challenged. Disabled until you enable it and accept
+# the notice on the Sources screen.
+
+key: indeed
+name: Indeed
+homepage: https://www.indeed.com
+login_url: https://secure.indeed.com/account/login
+description: Very large aggregator. Strong bot detection.
+page_size: 10
+
+search_url: >-
+  https://www.indeed.com/jobs?q={keywords}&l={location}&fromage={days}&sort=date&start={start}
+
+logged_out_markers:
+  - "#login-email-input"
+  - "form[name='loginform']"
+  - "div.g-recaptcha"
+  - "#challenge-running"
+
+selectors:
+  card: "div.job_seen_beacon, div.cardOutline, td.resultContent"
+  title: "h2.jobTitle span[title], h2.jobTitle a, a.jcs-JobTitle"
+  company: "span[data-testid='company-name'], span.companyName"
+  location: "div[data-testid='text-location'], div.companyLocation"
+  summary: "div[data-testid='belowJobSnippet'], div.job-snippet"
+  posted: "span[data-testid='myJobsStateDate'], span.date"
+  link: "h2.jobTitle a, a.jcs-JobTitle"
+  id_from: "a.jcs-JobTitle"

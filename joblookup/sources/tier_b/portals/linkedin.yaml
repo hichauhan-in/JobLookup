@@ -1,0 +1,34 @@
+# LinkedIn Jobs.
+#
+# WARNING: LinkedIn's User Agreement prohibits automated access. Using this can
+# get your account restricted or permanently banned. It stays disabled until you
+# enable it and accept the notice on the Sources screen.
+#
+# Selectors change often. If a run returns zero results, press "Test selectors"
+# on the Sources screen: it opens a visible browser and reports how many nodes
+# each selector matched, so you fix this file rather than any Python.
+
+key: linkedin
+name: LinkedIn
+homepage: https://www.linkedin.com
+login_url: https://www.linkedin.com/login
+description: The largest professional network. Also the strictest about automation.
+page_size: 25
+
+# f_TPR takes a window in seconds, which {seconds} already is.
+search_url: >-
+  https://www.linkedin.com/jobs/search/?keywords={keywords}&location={location}&f_TPR=r{seconds}&start={start}&sortBy=DD
+
+logged_out_markers:
+  - "div.authwall"
+  - "form.login__form"
+  - "a[href*='/uas/login']"
+
+selectors:
+  card: "div.job-card-container, li.jobs-search-results__list-item, div.base-card"
+  title: "a.job-card-list__title, a.job-card-container__link, h3.base-search-card__title"
+  company: ".job-card-container__primary-description, .artdeco-entity-lockup__subtitle, h4.base-search-card__subtitle"
+  location: ".job-card-container__metadata-item, .job-search-card__location"
+  summary: ".job-card-list__footer-wrapper, .job-search-card__snippet"
+  posted: "time, .job-search-card__listdate, .job-card-container__listed-time"
+  link: "a.job-card-list__title, a.base-card__full-link, a[href*='/jobs/view/']"

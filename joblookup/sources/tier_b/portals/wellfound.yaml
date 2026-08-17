@@ -1,0 +1,28 @@
+# Wellfound (formerly AngelList Talent).
+#
+# WARNING: Automated access is against the terms of service. Disabled until you
+# enable it and accept the notice on the Sources screen.
+
+key: wellfound
+name: Wellfound
+homepage: https://wellfound.com
+login_url: https://wellfound.com/login
+description: Startup roles, often with equity ranges shown up front.
+page_size: 20
+
+search_url: >-
+  https://wellfound.com/jobs?keywords={keywords}&location={location}&page={page}
+
+logged_out_markers:
+  - "form#new_user"
+  - "input#user_email"
+  - "a[href='/login']"
+
+selectors:
+  card: "div[data-test='JobSearchResults'] div[class*='styles_component'], div.job-listing"
+  title: "a[data-test='job-listing-title'], a[href*='/jobs/']"
+  company: "h2[class*='styles_name'], a[data-test='startup-link']"
+  location: "span[class*='styles_locations'], span[class*='location']"
+  summary: "span[class*='styles_description']"
+  posted: "span[class*='styles_postedDate'], time"
+  link: "a[data-test='job-listing-title'], a[href*='/jobs/']"

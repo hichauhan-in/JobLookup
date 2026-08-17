@@ -1,0 +1,28 @@
+# Glassdoor.
+#
+# WARNING: Glassdoor's terms prohibit scraping and it challenges automated
+# sessions readily. Disabled until you enable it and accept the notice.
+
+key: glassdoor
+name: Glassdoor
+homepage: https://www.glassdoor.com
+login_url: https://www.glassdoor.com/profile/login_input.htm
+description: Jobs plus salary and review context.
+page_size: 30
+
+search_url: >-
+  https://www.glassdoor.com/Job/jobs.htm?sc.keyword={keywords}&locT=C&locKeyword={location}&fromAge={days}&p={page}
+
+logged_out_markers:
+  - "div[data-test='authModal']"
+  - "#HardsellOverlay"
+  - "form[data-test='emailForm']"
+
+selectors:
+  card: "li[data-test='jobListing'], li.react-job-listing"
+  title: "a[data-test='job-title'], a.jobLink"
+  company: "span[class*='EmployerProfile_compactEmployerName'], div[data-test='employer-short-name']"
+  location: "div[data-test='emp-location'], div[class*='location']"
+  summary: "div[data-test='descSnippet']"
+  posted: "div[data-test='job-age'], div[class*='listing-age']"
+  link: "a[data-test='job-title'], a.jobLink"

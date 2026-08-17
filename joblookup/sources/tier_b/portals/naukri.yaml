@@ -1,0 +1,28 @@
+# Naukri.
+#
+# WARNING: Naukri's terms prohibit automated access. Disabled until you enable
+# it and accept the notice on the Sources screen.
+
+key: naukri
+name: Naukri
+homepage: https://www.naukri.com
+login_url: https://www.naukri.com/nlogin/login
+description: The dominant job portal in India.
+page_size: 20
+
+search_url: >-
+  https://www.naukri.com/jobs-in-{location}?keyword={keywords}&jobAge={days}&pageNo={page}
+
+logged_out_markers:
+  - "div.login-layer"
+  - "a[title='Jobseeker Login']"
+  - "#usernameField"
+
+selectors:
+  card: "div.srp-jobtuple-wrapper, article.jobTuple"
+  title: "a.title, a.title.ellipsis"
+  company: "a.comp-name, a.subTitle"
+  location: "span.locWdth, li.location span"
+  summary: "span.job-desc, div.job-description"
+  posted: "span.job-post-day, span.fleft.postedDate"
+  link: "a.title"

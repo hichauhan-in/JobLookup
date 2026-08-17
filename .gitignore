@@ -1,0 +1,25 @@
+# Python environment — not relocatable, absolute paths are baked into it.
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Your data. Never committed, never packaged, never shared.
+workspace/
+data/
+
+# Your machine's choices: provider, model, tuning, enabled sources.
+config/local.yaml
+
+# Provisioned binaries and offline wheel bundles.
+vendor/
+
+# Editors and OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

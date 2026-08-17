@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>JobLookup</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%2311141a'/><circle cx='14' cy='14' r='7' fill='none' stroke='%234f9dfd' stroke-width='2.5'/><path d='M19.5 19.5 L25 25' stroke='%234f9dfd' stroke-width='2.5' stroke-linecap='round'/></svg>"
+    />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <aside class="sidebar">
+        <header class="brand">
+          <svg viewBox="0 0 32 32" aria-hidden="true">
+            <rect width="32" height="32" rx="7" fill="#1a1f2b" />
+            <circle cx="14" cy="14" r="7" fill="none" stroke="#4f9dfd" stroke-width="2.5" />
+            <path d="M19.5 19.5 L25 25" stroke="#4f9dfd" stroke-width="2.5" stroke-linecap="round" />
+          </svg>
+          <span class="brand-name">JobLookup</span>
+        </header>
+
+        <button id="statusPill" class="pill pill-muted" type="button" title="Checking...">
+          <i class="dot"></i><span>Checking</span>
+        </button>
+
+        <nav id="nav" class="nav"></nav>
+
+        <div class="sidebar-foot">
+          <div id="tasksFoot" class="tasks-foot"></div>
+          <button id="themeToggle" class="ghost small" type="button">Light theme</button>
+          <button id="quitApp" class="ghost small danger" type="button">Close JobLookup</button>
+        </div>
+      </aside>
+
+      <main id="main" class="main">
+        <div class="loading">Loading...</div>
+      </main>
+    </div>
+
+    <div id="alerts" class="alerts"></div>
+    <div id="toasts" class="toasts" aria-live="polite"></div>
+
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>

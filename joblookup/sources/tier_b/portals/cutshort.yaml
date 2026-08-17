@@ -1,0 +1,28 @@
+# Cutshort.
+#
+# WARNING: Automated access is against the terms of service. Disabled until you
+# enable it and accept the notice on the Sources screen.
+
+key: cutshort
+name: Cutshort
+homepage: https://cutshort.io
+login_url: https://cutshort.io/login
+description: India, skill-matched startup roles.
+page_size: 20
+
+search_url: >-
+  https://cutshort.io/jobs?q={keywords}&location={location}&page={page}
+
+logged_out_markers:
+  - "form.login-form"
+  - "input[name='email'][type='email']"
+  - "a[href='/login']"
+
+selectors:
+  card: "div.job-card, div[class*='JobCard']"
+  title: "a.job-title, h3[class*='title']"
+  company: "div.company-name, span[class*='companyName']"
+  location: "div.job-location, span[class*='location']"
+  summary: "div.job-summary, div[class*='description']"
+  posted: "span[class*='posted'], time"
+  link: "a.job-title, a[href*='/jobs/']"
