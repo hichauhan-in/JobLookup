@@ -150,9 +150,11 @@ function chipGroup(title, values, labelOf, collection, results) {
 }
 
 async function load(results, runSlot) {
-  mount(results, el("div", { class: "loading span-all" },
-    el("div", { class: "loading-head" }, spinner(), el("span", { text: "Loading matches" }))
-  ));
+  // Cards in the same grid the results will use, so the layout does not jump.
+  mount(results,
+    el("div", { class: "loading-head span-all" }, spinner(), el("span", { text: "Loading matches" })),
+    ...Array.from({ length: 6 }, () => el("div", { class: "skeleton", style: { height: "150px" } }))
+  );
   try {
     const payload = await api.queryJobs(filter);
     if (runSlot) paintRunPicker(runSlot, payload, results);

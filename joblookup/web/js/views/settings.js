@@ -219,7 +219,7 @@ export async function renderSettings(container, query) {
   const wantsModel = query?.get("focus") === "model";
 
   const modelSlot = el("div", { class: "stack" }, modelPlaceholder());
-  const diagnosticsSlot = el("div", { class: "stack" });
+  const diagnosticsSlot = el("div", { class: "stack" }, diagnosticsPlaceholder());
   const tabSlot = el("div", { class: "stack" });
 
   const tabs = el("div", { class: "tab-bar", role: "tablist" },
@@ -308,6 +308,21 @@ function modelFailed(message) {
     el("div", { class: "notice danger" },
       el("strong", { text: "Could not check the providers" }),
       el("div", { class: "small-text", text: message })
+    )
+  );
+}
+
+/** Diagnostics runs every health check, so it arrives after the page does. */
+function diagnosticsPlaceholder() {
+  return card(
+    {
+      title: "Diagnostics",
+      subtitle: "Running every check the app can make about its own setup...",
+      actions: spinner(18),
+    },
+    el("div", { class: "skeleton-stack" },
+      el("div", { class: "skeleton short" }),
+      el("div", { class: "skeleton short" })
     )
   );
 }
@@ -772,14 +787,19 @@ function diagnosticsCard(health) {
 }
 
 function storageCard() {
-  const body = el("div", { class: "rows split" }, el("div", { class: "muted small-text", text: "Loading..." }));
+  const body = el("div", { class: "skeleton-stack" },
+    el("div", { class: "skeleton short" }),
+    el("div", { class: "skeleton short" })
+  );
   api.paths().then((paths) => {
     mount(body,
-      ...Object.entries(paths).map(([key, value]) =>
-        el("div", { class: "status-line" },
-          el("div", { class: "status-body" },
-            el("strong", { text: key.replace(/_/g, " ") }),
-            el("span", { class: "mono", text: value })
+      el("div", { class: "rows split" },
+        ...Object.entries(paths).map(([key, value]) =>
+          el("div", { class: "status-line" },
+            el("div", { class: "status-body" },
+              el("strong", { text: key.replace(/_/g, " ") }),
+              el("span", { class: "mono", text: value })
+            )
           )
         )
       )

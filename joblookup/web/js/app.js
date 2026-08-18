@@ -125,25 +125,34 @@ async function draw() {
 
 //: Screens that always take a moment, because they ask several things at once.
 const SLOW = {
-  settings: "Checking your model provider and running the health checks",
+  dashboard: "Reading your counts and recent searches",
+  settings: "Reading your settings",
   sources: "Reading the state of every source",
   matches: "Loading your matches",
+  history: "Reading your past searches",
+  profile: "Reading your CVs and profile",
+  applications: "Reading what you have applied to",
+  job: "Opening this posting",
 };
 
-/** A skeleton rather than the word "Loading", so a slow screen still feels alive. */
+/**
+ * A skeleton shaped like the page that is coming, rather than the word
+ * "Loading". It sits where the real content will sit, so nothing jumps when the
+ * screen arrives.
+ */
 function loadingPanel(name) {
   return el("div", { class: "view loading-view" },
     el("div", { class: "loading-head" },
-      spinner(),
-      el("div", {},
+      spinner(22),
+      el("div", { class: "loading-copy" },
         el("strong", { text: "Loading" }),
-        SLOW[name] ? el("div", { class: "small-text muted", text: SLOW[name] }) : null
+        el("span", { class: "small-text muted", text: SLOW[name] || "One moment" })
       )
     ),
     el("div", { class: "skeleton-stack" },
       el("div", { class: "skeleton tall" }),
       el("div", { class: "skeleton" }),
-      el("div", { class: "skeleton" })
+      el("div", { class: "skeleton short" })
     )
   );
 }
@@ -173,9 +182,26 @@ async function quit(button) {
       return;
     }
   }
-  document.body.innerHTML =
-    '<div class="loading">JobLookup has closed. You can close this tab.' +
-    '<br><br>Start it again with "Start JobLookup.cmd".</div>';
+  document.title = "JobLookup has closed";
+  mount(document.body, farewell());
+}
+
+/** The last thing you see. A closed app should look closed, not broken. */
+function farewell() {
+  return el("div", { class: "farewell" },
+    el("div", { class: "farewell-card", role: "status" },
+      el("div", { class: "farewell-mark" },
+        el("span", { class: "farewell-tick", text: "\u2713" })
+      ),
+      el("h1", { text: "JobLookup has closed" }),
+      el("p", { text: "The server has stopped and nothing is left running in the background. You can close this tab." }),
+      el("div", { class: "farewell-restart" },
+        el("span", { class: "small-text muted", text: "To start it again" }),
+        el("code", { text: "Start JobLookup.cmd" })
+      ),
+      el("p", { class: "farewell-foot small-text muted", text: "Everything you collected is saved in your workspace folder and will be there next time." })
+    )
+  );
 }
 
 // --- start -------------------------------------------------------------------
