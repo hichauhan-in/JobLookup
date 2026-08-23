@@ -41,6 +41,7 @@ function evaluate(state) {
   if (provider.key !== "vscode") {
     banner(KEY, {
       kind: "danger",
+      onDismiss: snooze,
       title: `${provider.label || "The language model"} is not available`,
       body: provider.detail || "Open Settings to choose a working provider.",
       actions: [{ label: "Open settings", run: () => (location.hash = "#/settings") }],
@@ -51,6 +52,7 @@ function evaluate(state) {
   if (!bridge.extension_installed) {
     banner(KEY, {
       kind: "danger",
+      onDismiss: snooze,
       title: "The JobLookup bridge is not installed in VS Code",
       body: "Run .\\scripts\\install-bridge.ps1 from the JobLookup folder, then reload VS Code.",
       actions: [{ label: "How to fix", run: () => (location.hash = "#/settings") }],
@@ -61,6 +63,7 @@ function evaluate(state) {
   if (!bridge.handshake_present) {
     banner(KEY, {
       kind: "warning",
+      onDismiss: snooze,
       title: "VS Code has not loaded the bridge yet",
       body: "Switch to VS Code, press Ctrl+Shift+P and run 'Developer: Reload Window'. Keep that window open while JobLookup is scoring.",
       actions: [],
@@ -70,14 +73,20 @@ function evaluate(state) {
 
   banner(KEY, {
     kind: "warning",
+    onDismiss: snooze,
     title: "The bridge is running but Copilot has not been authorised",
     body: "In VS Code, press Ctrl+Shift+P and run 'JobLookup Bridge: Authorise Copilot Access'. Accept the permission dialog when it appears.",
     actions: [],
   });
 }
 
-/** Suppress the banner for a while — used when the user chooses to carry on. */
-export function snoozeBridgeBanner(minutes = 10) {
+/**
+ * Stop nagging for a while.
+ *
+ * The check runs every six seconds, so simply removing the banner would put it
+ * straight back. Dismiss has to mean "I know, leave me alone", not "redraw".
+ */
+function snooze(minutes = 10) {
   dismissedUntil = Date.now() + minutes * 60_000;
   dismissBanner(KEY);
 }

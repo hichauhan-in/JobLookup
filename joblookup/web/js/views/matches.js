@@ -2,9 +2,9 @@
 
 import { api } from "../api.js";
 import { app } from "../app.js";
-import { card, chipToggle, el, mount, settingRow, spinner, toggle } from "../dom.js";
-import { bandLabel, percent, relativeDate, salary, truncate, workMode } from "../format.js";
-import { fail } from "../notify.js";
+import { card, chipToggle, el, mount, openDialog, settingRow, spinner, splitRows, toggle } from "../dom.js";
+import { bandLabel, percent, plural, relativeDate, salary, truncate, utc, workMode } from "../format.js";
+import { fail, ok } from "../notify.js";
 
 const BANDS = ["strong", "good", "stretch", "rejected"];
 const MODES = ["remote", "hybrid", "onsite"];
@@ -62,8 +62,13 @@ export async function renderMatches(container) {
   mount(
     container,
     el("div", { class: "page-head" },
-      el("h1", { text: "Matches" }),
-      el("p", { text: "Your most recent search, ranked by fit rather than by keyword. Stretch means the gap is real but closeable, and those are usually the interesting ones." })
+      el("div", { class: "row between" },
+        el("div", {},
+          el("h1", { text: "Matches" }),
+          el("p", { text: "Your most recent search, ranked by fit rather than by keyword. Stretch means the gap is real but closeable, and those are usually the interesting ones." })
+        ),
+        el("button", { class: "ghost small", onClick: () => showReset(container) }, "Start over")
+      )
     ),
     el("div", { class: "stack" },
       card({ title: "Filters" },
@@ -85,6 +90,98 @@ export async function renderMatches(container) {
   );
 
   await load(results, runSlot);
+}
+
+/**
+ * Starting again, with the two things that means kept apart.
+ *
+ * Clearing scores is cheap and reversible by re-running the match. Deleting the
+ * postings is neither, so it is a separate choice, and anything you are
+ * tracking is protected because deleting a posting would take its application
+ * with it.
+ *
+ * There is no second "are you sure" here. The dialog states exactly what the
+ * button will do and the button says it too, which is a better guard than a
+ * native prompt stacked on top of a dialog the reader has already read.
+ */
+function showReset(container) {
+  const keepTracked = toggle(true, { label: "Keep anything I am tracking" });
+  const warning = el("p", { class: "small-text muted" });
+  const confirmButton = el("button", { class: "danger" });
+
+  const alsoPostings = toggle(false, {
+    label: "Also delete the stored postings",
+    onChange: () => paint(),
+  });
+
+  //: The button has to say what it will do, because that is the only warning.
+  function paint() {
+    const wipe = alsoPostings.checked;
+    keepTracked.disabled = !wipe;
+    confirmButton.textContent = wipe ? "Delete postings and scores" : "Clear the scores";
+    warning.textContent = wipe
+      ? keepTracked.checked
+        ? "Postings you are tracking stay. Everything else goes, and finding it again means another search."
+        : "Everything goes, including postings you are tracking and the applications on them."
+      : "Scores only. Nothing is lost that Score again cannot rebuild.";
+    warning.classList.toggle("danger-text", wipe && !keepTracked.checked);
+  }
+
+  keepTracked.querySelector("input").addEventListener("change", paint);
+
+  const run = async (close) => {
+    const wipe = alsoPostings.checked;
+    confirmButton.disabled = true;
+    try {
+      const result = await api.resetMatches({
+        postings: wipe,
+        keep_tracked: keepTracked.checked,
+      });
+      const bits = [`${plural(result.scores_cleared, "score")} cleared`];
+      if (wipe) bits.push(`${plural(result.postings.removed, "posting")} deleted`);
+      if (wipe && result.postings.kept) {
+        bits.push(`${result.postings.kept} kept because you are tracking them`);
+      }
+      ok(`${bits.join(", ")}.`);
+      close();
+      await app.refreshState();
+      await renderMatches(container);
+    } catch (error) {
+      fail(error.message);
+      confirmButton.disabled = false;
+    }
+  };
+
+  confirmButton.addEventListener("click", () => run(close));
+  paint();
+
+  const close = openDialog(
+    {
+      title: "Start over",
+      subtitle: "Clear what has been judged so far. Your CVs, profile, sources and search history are not touched.",
+    },
+    splitRows(
+      el("div", { class: "setting span-all" },
+        el("div", { class: "setting-label" },
+          el("span", { class: "setting-title", text: "Also delete the stored postings" }),
+          el("span", { class: "setting-help", text: "Off clears the scores only, which is usually what you want: the postings stay and Score again re-judges them without another search. On empties the database of postings too." })
+        ),
+        el("div", { class: "setting-control" }, alsoPostings)
+      ),
+      el("div", { class: "setting span-all" },
+        el("div", { class: "setting-label" },
+          el("span", { class: "setting-title", text: "Keep anything I am tracking" }),
+          el("span", { class: "setting-help", text: "Deleting a posting deletes the application attached to it. Leave this on and those postings survive." })
+        ),
+        el("div", { class: "setting-control" }, keepTracked)
+      )
+    ),
+    warning,
+    el("div", { class: "row" },
+      confirmButton,
+      el("button", { class: "ghost", onClick: () => close() }, "Cancel")
+    )
+  );
 }
 
 /** The run picker, rebuilt from whatever the last query reported. */
@@ -126,7 +223,7 @@ function paintRunPicker(slot, payload, results) {
 }
 
 function when(stamp) {
-  const iso = stamp ? `${String(stamp).replace(" ", "T")}Z` : null;
+  const iso = utc(stamp);
   const date = iso ? new Date(iso) : null;
   return date && !Number.isNaN(date.getTime())
     ? date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })

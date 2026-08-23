@@ -19,6 +19,13 @@ paths:
 llm:
   # vscode | copilot_cli | openai_compat | anthropic
   provider: vscode
+  # Let the app pick the model, how much of each posting to send, and how much
+  # the model writes back, all from the economy dial below. Off uses the
+  # per-provider model and reasoning settings exactly as written.
+  auto: true
+  # 0 spends as little as possible, 100 spends whatever it takes. Change it on
+  # the Settings screen, where the cost of each position is shown as you drag.
+  economy: 50
   json_retries: 2
   max_concurrency: 2
 
@@ -76,6 +83,9 @@ search:
   # nl, fr, ca, au, sg, ae, ie. "remote" also filters results down to roles
   # positively identified as remote. Change it on the Sources screen, not here.
   region: in
+  # Off hides the country pack and hands the Sources screen back to manual
+  # configuration. Change it with the switch on that screen.
+  use_region: true
   min_request_interval_s: 1.0
   http_timeout_s: 30
   max_concurrent_sources: 4

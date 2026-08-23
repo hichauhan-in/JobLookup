@@ -3,8 +3,8 @@
 
 import { api } from "../api.js";
 import { app } from "../app.js";
-import { card, chipGroup, el, mount, toggle } from "../dom.js";
-import { plural, relativeDate } from "../format.js";
+import { card, chipGroup, el, mount, stat, toggle } from "../dom.js";
+import { plural, relativeDate, utc } from "../format.js";
 import { fail, ok, warn } from "../notify.js";
 import { TaskView, watch } from "../tasks.js";
 
@@ -176,13 +176,6 @@ function nearest(options, value) {
     Math.abs(option - value) < Math.abs(best - value) ? option : best, options[0]);
 }
 
-function stat(value, label) {
-  return el("div", { class: "stat" },
-    el("div", { class: "value", text: String(value ?? 0) }),
-    el("div", { class: "label", text: label })
-  );
-}
-
 function setupCard(steps) {
   const items = [
     { done: steps.has_cv, title: "Upload your CVs", body: "Every version you have. They are merged into one profile.", route: "/profile" },
@@ -225,7 +218,7 @@ function runsTable(runs) {
       ...runs.slice(0, 8).map((run) => {
         const stats = run.stats || {};
         return el("tr", {},
-          el("td", { text: relativeDate(run.started_at?.replace(" ", "T") + "Z") }),
+          el("td", { text: relativeDate(utc(run.started_at), "just now") }),
           el("td", { text: run.status }),
           el("td", { text: String(stats.new ?? 0) }),
           el("td", { text: String(stats.duplicates ?? 0) }),

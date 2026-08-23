@@ -2,7 +2,7 @@
 // deliberately awkward path to enabling a logged-in portal.
 
 import { api } from "../api.js";
-import { accordion, card, el, field, helpButton, mount, openDialog, spinner, splitRows, toggle } from "../dom.js";
+import { accordion, card, el, field, helpButton, mount, openDialog, splitRows, toggle } from "../dom.js";
 import { fail, ok, warn } from "../notify.js";
 import { TaskView, watch } from "../tasks.js";
 
@@ -40,11 +40,16 @@ const TIERS = {
 const openSections = { region: true, ats: false, a: false, b: false };
 const SECTION_KEYS = ["region", ...TIER_ORDER];
 
+//: The review panel stays open across re-renders, so applying a pack does not
+//: immediately hide the list of what it just did.
+let lastApplied = null;
+
 export async function renderSources(container) {
   const [payload, secrets] = await Promise.all([api.sources(), api.get("/api/secrets")]);
   const taskSlot = el("div", { class: "stack tight" });
   const groups = { a: [], ats: [], b: [] };
   for (const source of payload.sources || []) groups[source.tier]?.push(source);
+  const guided = payload.use_region !== false;
 
   const allOpen = SECTION_KEYS.every((key) => openSections[key]);
   const expander = el(
@@ -65,128 +70,103 @@ export async function renderSources(container) {
       el("div", { class: "row between" },
         el("div", {},
           el("h1", { text: "Sources" }),
-          el("p", { text: "Turn on what you want searched. Every source has a ? explaining exactly what it needs from you." })
+          el("p", { text: guided
+            ? "Start at the top: pick where you are looking and let it set everything up. The sections below are the same sources in full, so you can adjust anything it chose."
+            : "Guided setup is off, so this is the full list. Turn on what you want searched. Every source has a ? explaining exactly what it needs from you." })
         ),
         expander
       )
     ),
     el("div", { class: "stack" },
       taskSlot,
-      suggestCard(container),
-      regionCard(payload, secrets, taskSlot, container),
+      regionCard(payload, secrets, taskSlot, container, guided),
       ...TIER_ORDER.map((tier) =>
         tier === "b"
           ? tierBCard(payload, groups.b, taskSlot, container)
-          : tierCard(tier, groups[tier], secrets, taskSlot, container)
+          : tierCard(tier, groups[tier], secrets, taskSlot, container, payload)
       )
     )
   );
 }
 
-// --- company suggestions ------------------------------------------------------
-// Company boards are the best source of postings and the one thing the app
-// cannot set up for you, because it needs a list of company names. This picks
-// that list from a catalogue that was checked against the live APIs, ranked
-// against your profile, so nobody has to sit and think of companies.
-function suggestCard(container) {
-  const body = el("div", { class: "stack tight" });
-  const count = el("select", {},
-    ...[25, 50, 100, 150].map((value) =>
-      el("option", { value: String(value), selected: value === 100 }, `${value} companies`)
-    )
-  );
-  const replace = toggle(false, { label: "Replace what is already there" });
-
-  const run = async (apply) => {
-    preview.disabled = true;
-    applyButton.disabled = true;
-    mount(body, el("div", { class: "loading-head" }, spinner(), el("span", { text: "Ranking companies against your profile" })));
-    try {
-      const result = await api.suggestCompanies({
-        limit: Number(count.value),
-        apply,
-        replace: replace.checked,
-      });
-      mount(body, suggestionResult(result, apply));
-      if (apply) {
-        const total = Object.values(result.applied || {}).reduce((sum, n) => sum + n, 0);
-        ok(`${total} companies are now being watched across ${Object.keys(result.applied || {}).length} boards.`);
-        await renderSources(container);
-      }
-    } catch (error) {
-      fail(error.message);
-      mount(body, el("div", { class: "notice danger" }, el("p", { text: error.message })));
-    } finally {
-      preview.disabled = false;
-      applyButton.disabled = false;
-    }
-  };
-
-  const preview = el("button", { class: "ghost small", onClick: () => run(false) }, "Show me the list");
-  const applyButton = el("button", { class: "small", onClick: () => run(true) }, "Add them to my boards");
-
-  return accordion(
-    {
-      title: "Not sure which companies to watch?",
-      subtitle:
-        "Company boards are where the best postings come from, but they need company names. This picks them for you from a catalogue of employers whose boards were checked against the live APIs, ranked against your CV and what you are looking for.",
-      badge: el("span", { class: "chip", text: "suggested for you" }),
-      open: false,
-    },
-    splitRows(
-      el("div", { class: "setting span-all" },
-        el("div", { class: "setting-label" },
-          el("span", { class: "setting-title", text: "How many to add" }),
-          el("span", { class: "setting-help", text: "Spread across the boards so no single one dominates. More companies means a slower search, not a worse one." })
-        ),
-        el("div", { class: "setting-control" }, count)
-      ),
-      el("div", { class: "setting span-all" },
-        el("div", { class: "setting-label" },
-          el("span", { class: "setting-title", text: "Replace what is already there" }),
-          el("span", { class: "setting-help", text: "Off adds to your existing companies and keeps them. On starts the list again from these suggestions." })
-        ),
-        el("div", { class: "setting-control" }, replace)
-      )
-    ),
-    el("div", { class: "row" }, preview, applyButton),
-    body
-  );
-}
-
-function suggestionResult(result, applied) {
-  const picks = result.suggestions || [];
-  if (!picks.length) {
-    return el("div", { class: "notice" },
-      el("p", { text: "Nothing to suggest yet. Add a CV on the Profile screen so there is something to rank against." })
-    );
+// --- reviewing what was configured --------------------------------------------
+/** The companies a pack chose, so a setup that ran can actually be checked. */
+function reviewPanel(applied, container) {
+  if (!applied) return null;
+  const companies = applied.companies || [];
+  const byBoard = new Map();
+  for (const entry of companies) {
+    if (!byBoard.has(entry.board)) byBoard.set(entry.board, []);
+    byBoard.get(entry.board).push(entry);
   }
 
-  const tags = result.tags || [];
-  return el("div", { class: "stack tight" },
-    el("p", { class: "card-sub", style: { margin: 0 },
-      text: tags.length
-        ? `Ranked against your profile, which reads as: ${tags.join(", ")}. Every board here was confirmed working on ${result.verified_on}.`
-        : `Your profile has nothing to rank against yet, so these are simply the largest and best-paying employers in the catalogue. Every board was confirmed working on ${result.verified_on}.`,
-    }),
-    el("div", { class: "suggest-grid" },
-      ...picks.slice(0, 60).map((pick) =>
-        el("div", { class: "suggest-item" },
-          el("div", { class: "suggest-name" },
-            pick.name,
-            el("span", { class: `tier ats`, text: pick.board })
-          ),
-          el("div", { class: "suggest-why", text: (pick.reasons || []).join(" · ") || "A solid employer" })
-        )
-      )
+  const dismiss = el("button", {
+    class: "ghost small",
+    onClick: async () => {
+      lastApplied = null;
+      await renderSources(container);
+    },
+  }, "Hide this");
+
+  return el("div", { class: "review-panel" },
+    el("div", { class: "row between" },
+      el("div", {},
+        el("strong", { text: `${applied.name} is set up` }),
+        el("div", { class: "small-text muted", text: summarise(applied) })
+      ),
+      dismiss
     ),
-    picks.length > 60
-      ? el("p", { class: "muted small-text", text: `and ${picks.length - 60} more` })
+    byBoard.size
+      ? el("div", { class: "stack tight", style: { marginTop: "12px" } },
+          ...[...byBoard.entries()].map(([board, entries]) =>
+            el("details", { class: "source-detail" },
+              el("summary", {},
+                `${boardName(board)} · ${entries.length} companies`
+              ),
+              el("div", { class: "detail-body" },
+                el("div", { class: "suggest-grid" },
+                  ...entries.map((entry) =>
+                    el("div", { class: "suggest-item" },
+                      el("div", { class: "suggest-name" }, entry.name),
+                      el("div", { class: "suggest-why", text: (entry.reasons || []).join(" · ") || "A solid employer" })
+                    )
+                  )
+                )
+              )
+            )
+          )
+        )
       : null,
-    applied
-      ? null
-      : el("p", { class: "muted small-text", text: "Nothing has changed yet. Press Add them to my boards to start watching these." })
+    applied.needs_setup?.length
+      ? el("div", { class: "notice", style: { marginTop: "12px" } },
+          el("p", { text: "Still needs you: " + applied.needs_setup.map((entry) => `${entry.name} (${entry.reason})`).join("; ") })
+        )
+      : null,
+    applied.needs_login?.length
+      ? el("p", { class: "small-text muted", style: { marginTop: "10px" },
+          text: `${applied.needs_login.join(", ")} need a login, so they were left off. Turn them on in the logged-in portals section if you want them.`,
+        })
+      : null
   );
+}
+
+function summarise(applied) {
+  const parts = [];
+  const on = applied.enabled?.length || 0;
+  if (on) parts.push(`${on} source${on === 1 ? "" : "s"} switched on`);
+  if (applied.company_count) parts.push(`${applied.company_count} companies added`);
+  if (applied.needs_setup?.length) parts.push(`${applied.needs_setup.length} still need a key or a company`);
+  return parts.join(" · ") || "Nothing to change";
+}
+
+const BOARD_NAMES = {
+  greenhouse: "Greenhouse", lever: "Lever", ashby: "Ashby", workable: "Workable",
+  recruitee: "Recruitee", smartrecruiters: "SmartRecruiters", workday: "Workday",
+  personio: "Personio",
+};
+
+function boardName(key) {
+  return BOARD_NAMES[key] || key;
 }
 
 function remember(node, tier) {
@@ -196,40 +176,118 @@ function remember(node, tier) {
   return node;
 }
 
-// --- where you are looking ----------------------------------------------------
-// The same sources as the three sections below, but ordered by what is actually
-// worth your time in one country, with that country's settings filled in.
-function regionCard(payload, secrets, taskSlot, container) {
+// --- guided setup -------------------------------------------------------------
+// One place that configures everything, and one place that reports what it did.
+// The sections below are the same sources in full; this is the shortlist for
+// where you are, already filled in.
+function regionCard(payload, secrets, taskSlot, container, guided) {
   const region = payload.region || {};
   const picks = region.picks || [];
+
+  const master = toggle(guided, {
+    label: "Use guided setup",
+    onChange: async (value) => {
+      try {
+        await api.saveSettings({ search: { use_region: value } });
+        ok(value
+          ? "Guided setup is on. Pick where you are looking and press Set up."
+          : "Guided setup is off. Configure the sections below however you like.");
+        await renderSources(container);
+      } catch (error) {
+        master.checked = !value;
+        fail(error.message);
+      }
+    },
+  });
+
+  const masterRow = el("div", { class: "setting span-all" },
+    el("div", { class: "setting-label" },
+      el("span", { class: "setting-title", text: "Use guided setup" }),
+      el("span", { class: "setting-help", text: guided
+        ? "On means this card sets up the sections below for you. Everything it chooses stays editable down there, and is labelled so you can tell its choices from yours."
+        : "Off. Nothing is chosen for you: the sections below are the whole story and no country settings are applied." })
+    ),
+    el("div", { class: "setting-control" }, master)
+  );
+
+  if (!guided) {
+    return remember(
+      accordion(
+        {
+          title: "Guided setup",
+          subtitle: "Off. You are configuring every source yourself in the sections below.",
+          badge: el("span", { class: "chip", text: "off" }),
+          open: openSections.region,
+        },
+        splitRows(masterRow),
+        el("p", { class: "card-sub", style: { margin: 0 },
+          text: "Turn this back on if you would rather say where you are looking and have the right sources, country settings and companies filled in for you.",
+        })
+      ),
+      "region"
+    );
+  }
 
   const chooser = el("select", {},
     ...(payload.regions || []).map((entry) =>
       el("option", { value: entry.code, selected: entry.code === region.code }, entry.name)
     )
   );
+  const count = el("select", {},
+    ...[20, 40, 60, 100, 150].map((value) =>
+      el("option", { value: String(value), selected: value === 60 }, `${value} companies`)
+    )
+  );
 
-  const choose = async (apply) => {
+  const setUp = async () => {
+    applyButton.disabled = true;
+    applyButton.textContent = "Setting up...";
+    try {
+      const result = await api.setRegion(chooser.value, true, { companies: Number(count.value) });
+      lastApplied = result.applied;
+      ok(`${result.applied?.name}: ${summarise(result.applied)}.`);
+      await renderSources(container);
+    } catch (error) {
+      fail(error.message);
+      applyButton.disabled = false;
+      applyButton.textContent = "Set up everything";
+    }
+  };
+
+  chooser.addEventListener("change", async () => {
     chooser.disabled = true;
     try {
-      const result = await api.setRegion(chooser.value, apply);
-      if (apply) reportApplied(result.applied);
-      else ok(`Showing what works in ${result.region?.name || chooser.value}.`);
+      const result = await api.setRegion(chooser.value, false);
+      lastApplied = null;
+      ok(`Showing what works in ${result.region?.name || chooser.value}. Press Set up everything to apply it.`);
       await renderSources(container);
     } catch (error) {
       fail(error.message);
       chooser.disabled = false;
     }
-  };
+  });
 
-  chooser.addEventListener("change", () => choose(false));
-
-  const applyButton = el("button", { class: "ghost small", onClick: () => choose(true) },
-    "Set up this pack");
+  const applyButton = el("button", { class: "small", onClick: setUp }, "Set up everything");
+  const clearButton = el("button", {
+    class: "ghost small",
+    onClick: async () => {
+      if (!confirm(`Undo what the ${region.name} pack configured? Companies you added yourself are kept.`)) return;
+      try {
+        const result = await api.clearRegion();
+        lastApplied = null;
+        ok(result.cleared?.cleared?.length
+          ? `Cleared ${result.cleared.cleared.length} source(s).`
+          : "There was nothing from this pack to clear.");
+        await renderSources(container);
+      } catch (error) {
+        fail(error.message);
+      }
+    },
+  }, "Undo this pack");
 
   const ready = picks.filter((pick) => pick.enabled && pick.ready).length;
+  const managed = picks.filter((pick) => pick.config?.from_region === region.code).length;
 
-  // Independent of the pack, so "India, but only remote roles" is expressible.
   const remoteOnly = toggle(Boolean(payload.remote_only), {
     label: "Only show remote roles",
     disabled: region.remote_only,
@@ -252,20 +310,25 @@ function regionCard(payload, secrets, taskSlot, container) {
       {
         title: "Where are you looking?",
         subtitle:
-          "The same sources as the sections below, ordered by what actually works in one country, with that country's settings filled in. Nothing here is a different source; it is the shortlist worth your time where you are.",
+          "Pick a country and press Set up everything. It switches on the sources worth your time there, fills in that country's settings, and gives every company board a list of employers ranked against your CV. All of it stays editable in the sections below.",
         badge: el("span", { class: "chip", text: `${region.name || "India"} · ${ready} of ${picks.length} on` }),
         open: openSections.region,
       },
       splitRows(
+        masterRow,
         el("div", { class: "setting span-all" },
           el("div", { class: "setting-label" },
             el("span", { class: "setting-title", text: "Country or remote" }),
-            el("span", {
-              class: "setting-help",
-              text: "Changing this only changes what is shown. Press Set up this pack to switch on everything in it that can already run.",
-            })
+            el("span", { class: "setting-help", text: "Changing this only changes what is shown here. Nothing is applied until you press the button." })
           ),
-          el("div", { class: "setting-control" }, el("div", { class: "row tight" }, chooser, applyButton))
+          el("div", { class: "setting-control" }, chooser)
+        ),
+        el("div", { class: "setting span-all" },
+          el("div", { class: "setting-label" },
+            el("span", { class: "setting-title", text: "Companies to watch" }),
+            el("span", { class: "setting-help", text: "Spread across this pack's company boards, ranked for this country and your CV. More companies means a slower search, not a worse one." })
+          ),
+          el("div", { class: "setting-control" }, count)
         ),
         el("div", { class: "setting span-all" },
           el("div", { class: "setting-label" },
@@ -274,18 +337,21 @@ function regionCard(payload, secrets, taskSlot, container) {
               class: "setting-help",
               text: region.remote_only
                 ? "Always on for the Remote pack. Pick a country above if you want remote roles in one place instead of anywhere."
-                : `Combines with the country above, so you can search ${region.name || "one country"} and keep only the roles you can do from home. Anything not positively identified as remote is dropped.`,
+                : `Combines with the country above, so you can search ${region.name || "one country"} and keep only the roles you can do from home.`,
             })
           ),
           el("div", { class: "setting-control" }, remoteOnly)
         )
       ),
+      el("div", { class: "row" }, applyButton, managed ? clearButton : null),
       region.summary ? el("p", { class: "card-sub", style: { margin: "4px 0 0" }, text: region.summary }) : null,
+      reviewPanel(lastApplied, container),
       region.remote_only || payload.remote_only
         ? el("div", { class: "notice info" },
             el("p", { text: "Remote filtering is on: anything not positively identified as a remote role is dropped before it is scored." })
           )
         : null,
+      el("h3", { text: "What this pack uses", style: { margin: "8px 0 0" } }),
       splitRows(...picks.map((pick) => sourceRow(pick, secrets, taskSlot, container, pick.why))),
       region.note ? el("div", { class: "notice" }, el("p", { text: region.note })) : null
     ),
@@ -293,40 +359,33 @@ function regionCard(payload, secrets, taskSlot, container) {
   );
 }
 
-function reportApplied(applied) {
-  if (!applied) return;
-  const parts = [];
-  if (applied.enabled?.length) parts.push(`Switched on ${applied.enabled.length}`);
-  if (applied.needs_setup?.length) {
-    const n = applied.needs_setup.length;
-    parts.push(`${n} still ${n === 1 ? "needs" : "need"} a key or a company`);
-  }
-  if (applied.needs_login?.length) {
-    const n = applied.needs_login.length;
-    parts.push(`${n} ${n === 1 ? "needs" : "need"} a login`);
-  }
-  const summary = parts.join(". ") || "Nothing to change";
-  if (applied.needs_setup?.length || applied.needs_login?.length) warn(`${applied.name}: ${summary}.`);
-  else ok(`${applied.name}: ${summary}.`);
-}
-
-function tierCard(tier, sources, secrets, taskSlot, container) {
+function tierCard(tier, sources, secrets, taskSlot, container, payload) {
   const enabled = sources.filter((source) => source.enabled).length;
+  const regionCode = payload?.region?.code;
+  const fromPack = sources.filter((source) => source.config?.from_region === regionCode).length;
+
   return remember(
     accordion(
       {
         title: TIERS[tier].title,
         subtitle: TIERS[tier].subtitle,
-        badge: el("span", { class: "chip", text: `${enabled} of ${sources.length} on` }),
+        badge: el("div", { class: "row tight" },
+          fromPack
+            ? el("span", { class: "chip matched", text: `${fromPack} from your pack` })
+            : null,
+          el("span", { class: "chip", text: `${enabled} of ${sources.length} on` })
+        ),
         open: openSections[tier],
       },
-      splitRows(...sources.map((source) => sourceRow(source, secrets, taskSlot, container)))
+      splitRows(
+        ...sources.map((source) => sourceRow(source, secrets, taskSlot, container, "", payload))
+      )
     ),
     tier
   );
 }
 
-function sourceRow(source, secrets, taskSlot, container, why = "") {
+function sourceRow(source, secrets, taskSlot, container, why = "", payload = null) {
   const control = toggle(source.enabled, {
     // A portal cannot be switched on from here: it needs the master switch and
     // its own risk acknowledgement, both of which live in the section below.
@@ -343,14 +402,27 @@ function sourceRow(source, secrets, taskSlot, container, why = "") {
     },
   });
 
+  const companies = source.config?.slugs || [];
+  const managed = source.config?.from_region;
+  const regionName = payload?.region?.name;
+
   return el("div", { class: `source${source.enabled && !source.ready ? " blocked" : ""}` },
     el("div", { class: "source-main" },
       el("div", { class: "name" },
         source.name,
-        el("span", { class: `tier ${source.tier}`, text: source.tier === "a" ? "api" : source.tier })
+        el("span", { class: `tier ${source.tier}`, text: source.tier === "a" ? "api" : source.tier }),
+        // Where a list came from, so the pack's choices are never mistaken for
+        // your own and can be told apart at a glance.
+        managed && managed === payload?.region?.code
+          ? el("span", { class: "chip matched", title: `Chosen by your ${regionName} pack. Edit it below and it becomes yours.`, text: "from pack" })
+          : null,
+        companies.length
+          ? el("span", { class: "chip", text: `${companies.length} ${companies.length === 1 ? "company" : "companies"}` })
+          : null
       ),
       why ? el("div", { class: "source-why", text: why }) : null,
       statusNote(source),
+      companies.length ? companyPreview(source, companies) : null,
       why && source.is_tier_b
         ? el("div", { class: "source-note warn", text: "Turn this on in the logged-in portals section below, after reading the notice." })
         : null,
@@ -369,6 +441,32 @@ function sourceRow(source, secrets, taskSlot, container, why = "") {
       control
     )
   );
+}
+
+/** The first few companies inline, so a configured board shows it at a glance. */
+function companyPreview(source, companies) {
+  const shown = companies.slice(0, 6);
+  return el("div", { class: "company-preview" },
+    ...shown.map((slug) => el("span", { class: "company-pill", title: slug, text: shortName(slug) })),
+    companies.length > shown.length
+      ? el("button", {
+          class: "company-pill more",
+          onClick: () => openDialog(
+            { title: `${source.name}`, subtitle: `${companies.length} companies being watched` },
+            el("div", { class: "company-preview wrap" },
+              ...companies.map((slug) => el("span", { class: "company-pill", title: slug, text: shortName(slug) }))
+            )
+          ),
+        }, `+${companies.length - shown.length} more`)
+      : null
+  );
+}
+
+/** Workday is addressed by URL, which is unreadable as a pill. Show the tenant. */
+function shortName(slug) {
+  if (!slug.startsWith("http")) return slug;
+  const host = slug.split("://")[1]?.split("/")[0] || slug;
+  return host.split(".")[0];
 }
 
 /** Everything this particular source wants from you, in the order it wants it. */

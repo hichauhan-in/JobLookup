@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 from joblookup.models import RawJob
 from joblookup.sources.base import (
@@ -30,6 +31,14 @@ def _company_name(slug: str) -> str:
     return slug.replace("-", " ").replace("_", " ").strip().title()
 
 
+#: What a company short name is allowed to look like. Recruitee puts the slug in
+#: the hostname, so without this a "slug" of "attacker.tld#" would send the
+#: request somewhere else entirely. The other boards put it in the path, where
+#: the same trick only reaches a different page of the same vendor, but there is
+#: no board where a slash or an @ is meaningful.
+_SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
 class _BoardAdapter(SourceAdapter):
     """Shared loop: walk the configured companies, skip the ones that fail."""
 
@@ -39,6 +48,8 @@ class _BoardAdapter(SourceAdapter):
     address_shape = ""
     #: ``(address you see, what to enter)`` pairs, shown in the help dialog.
     examples: tuple[tuple[str, str], ...] = ()
+    #: Off for Workday, where the entry is a whole URL checked by its own parser.
+    slug_is_a_name = True
 
     def config_fields(self) -> list[ConfigField]:
         return [
@@ -93,6 +104,10 @@ class _BoardAdapter(SourceAdapter):
         for slug in slugs:
             if context.cancelled() or len(jobs) >= context.limit:
                 break
+            if self.slug_is_a_name and not _SLUG.fullmatch(slug):
+                failures.append(f"{slug}: that is not a company short name.")
+                context.log(f"{self.name}: skipped {slug!r}, which is not a company name")
+                continue
             try:
                 found = self.fetch_company(slug, context)
             except Exception as exc:  # noqa: BLE001
@@ -401,6 +416,8 @@ class Workday(_BoardAdapter):
     description = "Used by most large enterprises. Paste the careers page address as-is."
     address_shape = "<company>.wd<N>.myworkdayjobs.com/<SiteName>"
     rate_limit_s = 0.5
+    #: The entry here is a whole URL, checked by parse_workday_url instead.
+    slug_is_a_name = False
     examples = (
         (
             "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite",
@@ -606,19 +623,24 @@ def parse_workday_url(address: str) -> tuple[str, str, str]:
 
     Accepts anything from the bare host and site through to a deep link copied
     out of the middle of a search, with or without a language segment.
+
+    The host is matched by suffix rather than by "contains", because
+    ``myworkdayjobs.com@127.0.0.1`` and ``myworkdayjobs.com.example.net`` both
+    contain the string and neither is Workday.
     """
     cleaned = address.strip().strip("<>").rstrip("/")
     if not cleaned:
         raise SourceError("A Workday address cannot be empty.")
-    without_scheme = cleaned.split("://", 1)[-1]
-    host, _, path = without_scheme.partition("/")
-    host = host.lower()
-    if "myworkdayjobs.com" not in host and "myworkdaysite.com" not in host:
+    parts = urlsplit(cleaned if "://" in cleaned else f"https://{cleaned}")
+    if parts.username or parts.password:
+        raise SourceError("A Workday address should not carry a username or password.")
+    host = (parts.hostname or "").lower()
+    if not host.endswith((".myworkdayjobs.com", ".myworkdaysite.com")):
         raise SourceError(
-            f"'{address}' is not a Workday address. It should contain myworkdayjobs.com."
+            f"'{address}' is not a Workday address. It should end with myworkdayjobs.com."
         )
     tenant = host.split(".", 1)[0]
-    segments = [segment for segment in path.split("/") if segment]
+    segments = [segment for segment in parts.path.split("/") if segment]
     # A copied link may start with a locale, and may continue into /job/... .
     if segments and _LOCALE.fullmatch(segments[0]):
         segments = segments[1:]

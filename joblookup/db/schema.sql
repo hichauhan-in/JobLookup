@@ -154,7 +154,9 @@ CREATE TABLE IF NOT EXISTS crawl_run (
     status      TEXT    NOT NULL DEFAULT 'running',  -- running|ok|partial|failed|cancelled
     sources     TEXT    NOT NULL DEFAULT '[]',
     stats       TEXT    NOT NULL DEFAULT '{}',
-    error       TEXT
+    error       TEXT,
+    -- What the model cost for this search. Estimated, not billed: see llm/usage.py.
+    tokens      TEXT    NOT NULL DEFAULT '{}'
 );
 
 -- Which postings each search actually produced, so history can show its results

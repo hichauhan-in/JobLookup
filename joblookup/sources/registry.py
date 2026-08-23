@@ -16,7 +16,7 @@ from joblookup.db import session as db
 from joblookup.services import secrets
 from joblookup.sources import regions
 from joblookup.sources.ats import boards
-from joblookup.sources.base import FetchContext, SourceAdapter
+from joblookup.sources.base import FetchContext, SourceAdapter, as_list
 from joblookup.sources.tier_a import feeds, keyed
 from joblookup.sources.tier_b.portal import PortalAdapter, build_adapters
 
@@ -91,22 +91,44 @@ def context_for(
     locations: list[str] | None = None,
     log: Any = None,
     cancelled: Any = None,
+    config: dict[str, Any] | None = None,
+    secret: Any = None,
 ) -> FetchContext:
     return FetchContext(
         settings=settings,
-        config=source_config(key),
+        #: Callers that already hold the row pass it in. Re-reading it is a
+        #: query per source, and the Sources screen asks about thirty.
+        config=source_config(key) if config is None else config,
         queries=queries or [],
         locations=locations or [],
-        secret=secrets.get,
+        secret=secret or secrets.get,
         log=log or (lambda message: None),
         cancelled=cancelled or (lambda: False),
     )
+
+
+def _cached_secrets() -> Any:
+    """``secrets.get`` that asks the credential store once per name.
+
+    Readiness checks ask for the same handful of keys repeatedly, and on Windows
+    each miss is a cross-process call into Credential Manager. Within one screen
+    refresh the answer cannot change, so caching it is free.
+    """
+    seen: dict[str, str] = {}
+
+    def get(name: str) -> str:
+        if name not in seen:
+            seen[name] = secrets.get(name)
+        return seen[name]
+
+    return get
 
 
 def list_sources(settings: Settings) -> list[dict[str, Any]]:
     """Source rows enriched with live readiness from the adapter itself."""
     adapters = all_adapters()
     rows = db.connect().execute("SELECT * FROM source ORDER BY tier, name").fetchall()
+    secret = _cached_secrets()
 
     result: list[dict[str, Any]] = []
     for row in rows:
@@ -130,7 +152,12 @@ def list_sources(settings: Settings) -> list[dict[str, Any]]:
             result.append(entry)
             continue
 
-        context = context_for(row["key"], settings)
+        context = context_for(
+            row["key"],
+            settings,
+            config={**entry["config"], "risk_ack": entry["risk_ack"]},
+            secret=secret,
+        )
         ready, reason = adapter.is_configured(context)
         entry.update(
             ready=ready,
@@ -155,29 +182,78 @@ def enabled_adapters() -> list[SourceAdapter]:
 
 
 # --- country packs ------------------------------------------------------------
-def region_view(code: str, settings: Settings) -> dict[str, Any]:
-    """A country pack joined to the live state of each source it recommends."""
+def region_view(
+    code: str, settings: Settings, *, sources: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """A country pack joined to the live state of each source it recommends.
+
+    ``sources`` is there for the Sources screen, which has already built that
+    list and would otherwise pay for it twice in one request.
+    """
     region = regions.resolve(code)
-    rows = {row["key"]: row for row in list_sources(settings)}
+    rows = {row["key"]: row for row in (sources if sources is not None else list_sources(settings))}
     picks = []
     for pick in region.picks:
         row = rows.get(pick.key)
         if row is None:
             continue
-        picks.append({**row, "why": pick.why, "preset": dict(pick.config)})
+        companies = as_list(row.get("config", {}).get("slugs"))
+        picks.append(
+            {
+                **row,
+                "why": pick.why,
+                "preset": dict(pick.config),
+                "companies": companies,
+                "company_count": len(companies),
+            }
+        )
     return {**region.to_dict(), "picks": picks}
 
 
-def apply_region(code: str, settings: Settings) -> dict[str, Any]:
-    """Turn on everything in a pack that can run right now, and say what cannot.
+def apply_region(
+    code: str,
+    settings: Settings,
+    *,
+    companies: int = 60,
+    replace: bool = True,
+) -> dict[str, Any]:
+    """Set a pack up completely, and report exactly what it did.
 
-    Country settings are filled in for every pick, because they are correct
-    whether or not the source is on yet. Nothing needing a login is ever enabled
-    here: that stays a deliberate, separate act.
+    "Completely" is the point. Enabling a company board without giving it any
+    companies leaves it switched on and unable to run, which reads as a button
+    that did not work. So the boards in a pack are filled from the verified
+    catalogue, ranked for this country and this profile, in the same action.
+
+    Nothing needing a login is ever enabled here: that stays a deliberate,
+    separate act.
     """
+    from joblookup import store
+    from joblookup.services import suggest
+
+    # Writing to rows that do not exist yet silently does nothing, so make sure
+    # every adapter has one before configuring any of them.
+    sync_source_table()
     region = regions.resolve(code)
     adapters = all_adapters()
-    turned_on: list[str] = []
+    pack_boards = [
+        pick.key
+        for pick in region.picks
+        if (adapter := adapters.get(pick.key)) is not None and adapter.tier == "ats"
+    ]
+
+    # Companies are chosen for the country the pack is for, not for wherever the
+    # settings happened to point when the button was pressed.
+    for_region = settings.model_copy(deep=True)
+    for_region.search.region = region.code
+    profile = store.get_profile().get("data") or {}
+    picked = (
+        suggest.rank_companies(profile, for_region, limit=companies, boards=pack_boards)
+        if pack_boards
+        else []
+    )
+    by_board = suggest.grouped_slugs(picked)
+
+    turned_on: list[dict[str, Any]] = []
     needs_setup: list[dict[str, str]] = []
     needs_login: list[str] = []
 
@@ -185,15 +261,32 @@ def apply_region(code: str, settings: Settings) -> dict[str, Any]:
         adapter = adapters.get(pick.key)
         if adapter is None:
             continue
-        if pick.config:
-            update_config(pick.key, pick.config)
+
+        patch: dict[str, Any] = dict(pick.config)
+        added = by_board.get(pick.key) or []
+        if added:
+            existing = [] if replace else as_list(source_config(pick.key).get("slugs"))
+            patch["slugs"] = list(dict.fromkeys([*existing, *added]))
+            # Provenance, so the sections below can say where a list came from
+            # and the user can tell the pack's choices from their own.
+            patch["from_region"] = region.code
+        if patch:
+            update_config(pick.key, patch)
+
         if adapter.tier == "b":
             needs_login.append(adapter.name)
             continue
+
         ready, reason = adapter.is_configured(context_for(pick.key, settings))
         if ready:
             set_enabled(pick.key, True)
-            turned_on.append(adapter.name)
+            turned_on.append(
+                {
+                    "key": pick.key,
+                    "name": adapter.name,
+                    "companies": len(patch.get("slugs") or []),
+                }
+            )
         else:
             needs_setup.append({"name": adapter.name, "reason": reason, "key": pick.key})
 
@@ -203,7 +296,33 @@ def apply_region(code: str, settings: Settings) -> dict[str, Any]:
         "enabled": turned_on,
         "needs_setup": needs_setup,
         "needs_login": needs_login,
+        "companies": [entry.to_dict() for entry in picked],
+        "company_count": len(picked),
     }
+
+
+def clear_region(code: str) -> dict[str, Any]:
+    """Undo what a pack configured, leaving anything the user added themselves.
+
+    Only the companies the pack wrote are removed, which is why the slugs it
+    added are recorded alongside them.
+    """
+    region = regions.resolve(code)
+    adapters = all_adapters()
+    cleared: list[str] = []
+
+    for pick in region.picks:
+        adapter = adapters.get(pick.key)
+        if adapter is None:
+            continue
+        config = source_config(pick.key)
+        if config.get("from_region") != region.code:
+            continue
+        update_config(pick.key, {"slugs": [], "from_region": ""})
+        set_enabled(pick.key, False)
+        cleared.append(adapter.name)
+
+    return {"region": region.code, "name": region.name, "cleared": cleared}
 
 
 def set_enabled(key: str, enabled: bool) -> None:

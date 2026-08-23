@@ -8,6 +8,7 @@ shape of one API response.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 import threading
 import time
@@ -15,6 +16,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 from xml.etree import ElementTree
 
 import httpx
@@ -30,6 +32,55 @@ FAILURE_PATIENCE = 3
 MAX_FEED_BYTES = 16 * 1024 * 1024
 
 _DOCTYPE = re.compile(r"<!\s*(DOCTYPE|ENTITY)", re.IGNORECASE)
+
+#: A redirect is a URL chosen by whoever we just called, so it gets the same
+#: scrutiny as one the user typed. Enough hops for a real vendor, not enough
+#: for a loop.
+MAX_REDIRECTS = 5
+
+
+def _is_private(host: str) -> bool:
+    """Does this name or address point back at us or at the private network?
+
+    Only literal addresses are resolved here. A hostname is left to DNS, which
+    is the honest answer: we cannot pin what a name will resolve to at connect
+    time without doing the lookup ourselves, and the addresses that matter for
+    a metadata-service or loopback attack are almost always given literally.
+    """
+    bare = host.strip().strip("[]").split("%", 1)[0]
+    if bare.lower() in {"localhost", "localhost.localdomain"}:
+        return True
+    try:
+        address = ipaddress.ip_address(bare)
+    except ValueError:
+        return False
+    return (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_unspecified
+    )
+
+
+def check_outbound(url: str) -> None:
+    """Refuse to fetch anything that is not a public web address.
+
+    Sources are third parties, and a third party can answer with a redirect.
+    Following one to ``169.254.169.254`` or back to our own API would turn every
+    enabled feed into a way to read this machine, so every URL is checked, not
+    just the ones the user typed.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise SourceError(f"Refusing to fetch a {parts.scheme or 'schemeless'} address.")
+    if parts.username or parts.password:
+        raise SourceError("Refusing a URL that carries credentials in the host.")
+    host = parts.hostname or ""
+    if not host:
+        raise SourceError("That address has no host.")
+    if _is_private(host):
+        raise SourceError(f"Refusing to fetch {host}, which is on this machine or network.")
 
 
 @dataclass(slots=True)
@@ -244,24 +295,35 @@ class SourceAdapter(ABC):
         json_body: Any = None,
     ) -> httpx.Response:
         search = context.settings.search
-        _limiter.wait(_host_of(url), max(search.min_request_interval_s, self.rate_limit_s))
         merged = {
             "user-agent": search.user_agent,
             "accept": "application/json, text/plain;q=0.8, */*;q=0.5",
             **(headers or {}),
         }
-        try:
-            response = httpx.request(
-                method,
-                url,
-                params=params,
-                headers=merged,
-                json=json_body,
-                timeout=search.http_timeout_s,
-                follow_redirects=True,
-            )
-        except httpx.RequestError as exc:
-            raise SourceError(f"Could not reach {_host_of(url)}: {exc}") from exc
+
+        #: Walked by hand rather than with follow_redirects, so that every hop
+        #: is checked. httpx would follow a 302 into 127.0.0.1 without asking.
+        for hop in range(MAX_REDIRECTS + 1):
+            check_outbound(url)
+            _limiter.wait(_host_of(url), max(search.min_request_interval_s, self.rate_limit_s))
+            try:
+                response = httpx.request(
+                    method,
+                    url,
+                    params=params,
+                    headers=merged,
+                    json=json_body,
+                    timeout=search.http_timeout_s,
+                    follow_redirects=False,
+                )
+            except httpx.RequestError as exc:
+                raise SourceError(f"Could not reach {_host_of(url)}: {exc}") from exc
+
+            if not response.is_redirect or hop == MAX_REDIRECTS:
+                break
+            url = str(response.next_request.url) if response.next_request else url
+            #: A redirected request is a fresh one, so the body does not follow.
+            params, json_body = None, None
 
         if response.status_code == 429:
             raise SourceError(

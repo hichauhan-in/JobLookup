@@ -84,7 +84,8 @@ years-of-experience line is higher than the candidate's.
 learnable_gaps: things a motivated person could be interview-ready on in about a
 week. Name the tool or the concept, never "communication skills".
 hard_gaps: things that genuinely need years.
-rationale: two sentences of plain English addressed to the candidate. No filler.
+rationale: plain English addressed to the candidate, within the word limit the
+user message gives. No filler, no preamble.
 
 Return one entry for every job id you were given, using that exact id.
 
@@ -106,7 +107,7 @@ Schema:
 }"""
 
 
-def candidate_block(profile: dict[str, Any]) -> str:
+def candidate_block(profile: dict[str, Any], skill_limit: int = 70) -> str:
     summary = {
         "headline": profile.get("headline", ""),
         "total_years_experience": profile.get("total_years_experience", 0),
@@ -120,11 +121,18 @@ def candidate_block(profile: dict[str, Any]) -> str:
         "work_authorisation": profile.get("work_authorization", ""),
         "exclusions": profile.get("exclusions") or [],
     }
-    skills = ", ".join(skill_names(profile)[:70]) or "not specified"
+    skills = ", ".join(skill_names(profile)[:skill_limit]) or "not specified"
     return "CANDIDATE\n" + json.dumps(summary, indent=2) + f"\n\nSKILLS\n{skills}"
 
 
-def score_user(profile: dict[str, Any], jobs: list[dict[str, Any]], description_chars: int) -> str:
+def score_user(
+    profile: dict[str, Any],
+    jobs: list[dict[str, Any]],
+    description_chars: int,
+    *,
+    rationale_words: int = 28,
+    skill_limit: int = 70,
+) -> str:
     entries = [
         {
             "id": str(job["id"]),
@@ -139,9 +147,10 @@ def score_user(profile: dict[str, Any], jobs: list[dict[str, Any]], description_
         for job in jobs
     ]
     return (
-        f"{candidate_block(profile)}\n\n"
+        f"{candidate_block(profile, skill_limit)}\n\n"
         f"JOBS ({len(entries)})\n"
         f"{json.dumps(entries, indent=2, ensure_ascii=False)}\n\n"
+        f"Keep each rationale to at most {rationale_words} words.\n"
         f"Return a score entry for each of the {len(entries)} ids above."
     )
 

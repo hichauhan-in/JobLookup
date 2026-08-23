@@ -11,6 +11,7 @@
 import { api } from "../api.js";
 import { app } from "../app.js";
 import { accordion, card, el, field, mount, settingRow, spinner, splitRows, toggle } from "../dom.js";
+import { humanTokens } from "../format.js";
 import { fail, ok } from "../notify.js";
 
 const EFFORTS = ["", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -219,6 +220,7 @@ export async function renderSettings(container, query) {
   const wantsModel = query?.get("focus") === "model";
 
   const modelSlot = el("div", { class: "stack" }, modelPlaceholder());
+  const budgetSlot = el("div", { class: "stack" }, budgetPlaceholder());
   const diagnosticsSlot = el("div", { class: "stack" }, diagnosticsPlaceholder());
   const tabSlot = el("div", { class: "stack" });
 
@@ -254,6 +256,7 @@ export async function renderSettings(container, query) {
       el("p", { text: "Your choices are written to config/local.yaml, which survives an update. API keys never go in there." })
     ),
     el("div", { class: "stack" },
+      budgetSlot,
       modelSlot,
       tabs,
       tabSlot,
@@ -269,9 +272,13 @@ export async function renderSettings(container, query) {
       if (!container.isConnected) return;
       mount(modelSlot, modelCard({ ...payload, providers }, container));
       if (wantsModel) revealModel(modelSlot);
+      const models = providers.find((entry) => entry.key === payload.settings.llm.provider)?.models || [];
+      paintBudget(budgetSlot, payload, models, container);
     })
     .catch((error) => {
-      if (container.isConnected) mount(modelSlot, modelFailed(error.message));
+      if (!container.isConnected) return;
+      mount(modelSlot, modelFailed(error.message));
+      paintBudget(budgetSlot, payload, [], container);
     });
 
   api.health()
@@ -324,6 +331,171 @@ function diagnosticsPlaceholder() {
       el("div", { class: "skeleton short" }),
       el("div", { class: "skeleton short" })
     )
+  );
+}
+
+function budgetPlaceholder() {
+  return card(
+    { title: "Model spending", subtitle: "Working out what a search costs...", actions: spinner(18) },
+    el("div", { class: "skeleton-stack" }, el("div", { class: "skeleton" }))
+  );
+}
+
+// --- what a search costs ------------------------------------------------------
+// Token cost is decided by how much text is sent, not by which model reads it.
+// The dial owns that, and shows the number moving as you drag it, because a
+// trade-off you cannot see is a trade-off nobody makes deliberately.
+function paintBudget(slot, payload, models, container) {
+  const settings = payload.settings;
+  const saved = settings.llm.economy ?? 50;
+  let shown = saved;
+
+  const auto = toggle(settings.llm.auto !== false, {
+    label: "Choose the model and detail automatically",
+    onChange: async (value) => {
+      try {
+        await api.saveSettings({ llm: { auto: value } });
+        ok(value ? "Auto is on." : "Auto is off. Your own model settings are used as written.");
+        await renderSettings(container);
+      } catch (error) {
+        auto.checked = !value;
+        fail(error.message);
+      }
+    },
+  });
+
+  const slider = el("input", {
+    type: "range",
+    min: "0",
+    max: "100",
+    step: "5",
+    value: String(saved),
+    class: "depth-slider economy-slider",
+    disabled: settings.llm.auto === false,
+    "aria-label": "How much to spend per search",
+  });
+
+  const readout = el("div", { class: "budget-readout" });
+  const detail = el("div", { class: "stack tight" });
+  const save = el("button", {
+    class: "ghost small",
+    disabled: true,
+    onClick: async () => {
+      save.disabled = true;
+      try {
+        await api.saveSettings({ llm: { economy: Number(slider.value) } });
+        ok("Saved.");
+        await renderSettings(container);
+      } catch (error) {
+        fail(error.message);
+        save.disabled = false;
+      }
+    },
+  }, "Save this level");
+
+  let timer;
+  const refresh = async () => {
+    shown = Number(slider.value);
+    slider.style.setProperty("--fill", `${shown}%`);
+    save.disabled = shown === saved || settings.llm.auto === false;
+    try {
+      const result = await api.budget({ economy: shown, models });
+      if (slot.isConnected) mount(detail, budgetDetail(result, readout));
+    } catch {
+      /* The preview is a nicety; a failure here must not break Settings. */
+    }
+  };
+  slider.addEventListener("input", () => {
+    clearTimeout(timer);
+    slider.style.setProperty("--fill", `${slider.value}%`);
+    timer = setTimeout(refresh, 120);
+  });
+  refresh();
+
+  mount(slot, card(
+    {
+      title: "Model spending",
+      subtitle:
+        "What one search costs is decided by how much text is sent to the model, not by which model reads it. This dial owns that. How many postings get sent at all is the depth slider on the Dashboard.",
+      actions: el("span", { class: "chip", text: settings.llm.auto === false ? "manual" : "auto" }),
+      tone: "strong",
+    },
+    splitRows(
+      el("div", { class: "setting span-all" },
+        el("div", { class: "setting-label" },
+          el("span", { class: "setting-title", text: "Choose everything automatically" }),
+          el("span", { class: "setting-help", text: "On picks the model, how much of each posting to send and how much the model writes back, from the one dial below. Off uses the model and reasoning settings you set yourself, exactly as written." })
+        ),
+        el("div", { class: "setting-control" }, auto)
+      ),
+      el("div", { class: "setting span-all" },
+        el("div", { class: "setting-label" },
+          el("span", { class: "setting-title", text: "How much to spend per search" }),
+          el("span", { class: "setting-help", text: "Left spends as little as possible. Right spends whatever it takes. The estimate updates as you drag." })
+        ),
+        el("div", { class: "setting-control" }, el("div", { class: "depth-control" }, slider, readout))
+      )
+    ),
+    detail,
+    el("div", { class: "row" }, save)
+  ));
+}
+
+function budgetDetail(result, readout) {
+  const budget = result.budget || {};
+  const estimate = result.estimate || {};
+  const manual = result.manual_estimate || {};
+  const saving = manual.total_tokens ? 1 - estimate.total_tokens / manual.total_tokens : 0;
+
+  mount(readout,
+    el("span", { class: "depth-name", text: budget.label || "" }),
+    el("span", { class: "depth-detail",
+      text: `about ${humanTokens(estimate.total_tokens)} tokens per search · ${estimate.calls} model calls · ${budget.model || "default model"}`,
+    })
+  );
+
+  return el("div", { class: "stack tight" },
+    el("p", { class: "card-sub", style: { margin: 0 }, text: budget.note || "" }),
+    el("div", { class: "budget-facts" },
+      fact("Model", `${budget.model || "provider default"}`, budget.tier_label || ""),
+      fact("Each posting", `${budget.description_chars} characters`, "of its description is sent"),
+      fact("Batch size", `${budget.score_batch_size} postings`, "judged in one call"),
+      fact("Answers", `${budget.rationale_words} words`, "of reasoning per posting"),
+      fact("Effort", budget.reasoning_effort || "model default", "how long it may think")
+    ),
+    saving > 0.02
+      ? el("p", { class: "small-text muted", style: { margin: 0 },
+          text: `That is about ${Math.round(saving * 100)}% fewer tokens than your saved manual settings would use.`,
+        })
+      : null,
+    el("details", { class: "source-detail" },
+      el("summary", { text: "Where the tokens go" }),
+      el("div", { class: "detail-body" },
+        el("div", { class: "budget-bars" },
+          ...(result.breakdown || []).map((part) =>
+            el("div", { class: "budget-bar" },
+              el("div", { class: "budget-bar-head" },
+                el("span", { text: part.label }),
+                el("span", { class: "muted", text: `${humanTokens(part.tokens)} · ${Math.round(part.share * 100)}%` })
+              ),
+              el("div", { class: "budget-bar-track" },
+                el("div", { class: "budget-bar-fill", style: { width: `${Math.max(1, part.share * 100)}%` } })
+              ),
+              el("div", { class: "field-help", text: part.note })
+            )
+          )
+        ),
+        el("p", { class: "small-text muted", text: "Estimated at about four characters per token. Good enough to compare settings; read your provider's dashboard for exact billing." })
+      )
+    )
+  );
+}
+
+function fact(label, value, note) {
+  return el("div", { class: "budget-fact" },
+    el("span", { class: "budget-fact-label", text: label }),
+    el("span", { class: "budget-fact-value", text: value }),
+    note ? el("span", { class: "budget-fact-note", text: note }) : null
   );
 }
 

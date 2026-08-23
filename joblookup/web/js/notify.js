@@ -23,8 +23,12 @@ const banners = new Map();
  *
  * Keyed, so the same condition re-reported does not stack up — the bridge check
  * runs every few seconds and would otherwise paper the screen.
+ *
+ * `onDismiss` matters more than it looks. A banner raised by a repeating check
+ * is re-raised on the next tick, so removing the node is not dismissing it. The
+ * caller has to be told, so it can stop asking for a while.
  */
-export function banner(key, { title, body, actions = [], kind = "info" }) {
+export function banner(key, { title, body, actions = [], kind = "info", onDismiss } = {}) {
   let node = banners.get(key);
   if (!node) {
     node = el("div", { class: `notice ${kind}` });
@@ -40,7 +44,10 @@ export function banner(key, { title, body, actions = [], kind = "info" }) {
         ...actions.map((action) =>
           el("button", { class: "ghost small", onClick: action.run }, action.label)
         ),
-        el("button", { class: "link small", onClick: () => dismissBanner(key) }, "Dismiss")
+        el("button", {
+          class: "link small",
+          onClick: () => (onDismiss ? onDismiss() : dismissBanner(key)),
+        }, "Dismiss")
       )
     )
   );
@@ -53,8 +60,4 @@ export function dismissBanner(key) {
     node.remove();
     banners.delete(key);
   }
-}
-
-export function hasBanner(key) {
-  return banners.has(key);
 }

@@ -1,11 +1,19 @@
 // Presentation helpers. Anything that turns data into words a person reads.
 
-export function relativeDate(iso) {
+//: SQLite writes "YYYY-MM-DD HH:MM:SS" in UTC and marks neither of those facts,
+//: so a browser would otherwise read it as local time and be hours out.
+export function utc(stamp) {
+  return stamp ? `${String(stamp).replace(" ", "T")}Z` : null;
+}
+
+//: `fresh` is what to say for anything under an hour old. It reads as "just
+//: posted" for a job, but a status you changed a minute ago was not posted.
+export function relativeDate(iso, fresh = "just posted") {
   if (!iso) return "date unknown";
   const posted = new Date(iso);
   if (Number.isNaN(posted.getTime())) return "date unknown";
   const hours = (Date.now() - posted.getTime()) / 3_600_000;
-  if (hours < 1) return "just posted";
+  if (hours < 1) return fresh;
   if (hours < 24) return `${Math.round(hours)}h ago`;
   const days = Math.round(hours / 24);
   if (days === 1) return "yesterday";
@@ -15,6 +23,15 @@ export function relativeDate(iso) {
 
 export function percent(value) {
   return `${Math.round((Number(value) || 0) * 100)}%`;
+}
+
+//: Token counts run to six digits. Nobody reads those, and the exact figure is
+//: an estimate anyway, so the magnitude is the honest thing to show.
+export function humanTokens(tokens) {
+  const n = Number(tokens || 0);
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`;
+  return String(n);
 }
 
 export function salary(job) {

@@ -50,6 +50,19 @@ class RegionSelect(BaseModel):
     #: Switch on everything in the pack that can already run, rather than only
     #: showing it. Selecting a pack alone changes nothing but the view.
     apply: bool = False
+    #: How many companies to spread across the pack's boards when applying.
+    companies: int = Field(default=60, ge=0, le=400)
+    #: Replace the pack's previous choices rather than adding to them.
+    replace: bool = True
+
+
+class BudgetPreview(BaseModel):
+    #: None means "whatever is currently saved".
+    economy: int | None = Field(default=None, ge=0, le=100)
+    #: How many postings to price. Defaults to the saved shortlist size.
+    postings: int | None = Field(default=None, ge=1, le=2000)
+    #: Supplied by the browser so the preview does not re-probe the provider.
+    models: list[str] = Field(default_factory=list)
 
 
 class CompanySuggestRequest(BaseModel):
@@ -101,6 +114,13 @@ class SearchRequest(BaseModel):
 
 class MatchRequest(BaseModel):
     rescore: bool = False
+
+
+class ResetRequest(BaseModel):
+    #: Also delete the stored postings, not only what they scored.
+    postings: bool = False
+    #: Keep any posting you are tracking, so an application is never lost.
+    keep_tracked: bool = True
 
 
 class JobFilter(BaseModel):

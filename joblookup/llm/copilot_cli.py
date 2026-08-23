@@ -141,7 +141,10 @@ class CopilotCliProvider:
                 [executable, "--version"],
                 capture_output=True,
                 text=True,
-                timeout=30,
+                #: Printing a version number is not work. A CLI that has not
+                #: answered in this long is wedged, and the Settings screen is
+                #: waiting on us.
+                timeout=5,
                 creationflags=_NO_WINDOW,
             )
         except Exception as exc:  # noqa: BLE001

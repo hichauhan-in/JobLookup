@@ -26,6 +26,7 @@ from joblookup.config import Settings
 from joblookup.events import EventBus
 from joblookup.llm import LLMClient
 from joblookup.llm.base import LLMError, LLMUnavailableError
+from joblookup.llm.budget import Budget
 from joblookup.models import Score
 
 
@@ -60,12 +61,14 @@ def score_jobs(
     profile_version: int,
     *,
     cancelled: Any = lambda: False,
+    budget: Budget | None = None,
 ) -> list[Score]:
     if not jobs:
         return []
 
     batch_size = max(1, settings.matching.score_batch_size)
     model = client.model
+    client = client.for_purpose("scoring")
     scores: list[Score] = []
     missing: list[dict[str, Any]] = []
     done = 0
@@ -75,7 +78,9 @@ def score_jobs(
             break
         batch = jobs[start : start + batch_size]
         try:
-            produced = _score_batch(profile, batch, client, settings, profile_version, model)
+            produced = _score_batch(
+                profile, batch, client, settings, profile_version, model, budget
+            )
         except LLMUnavailableError:
             raise
         except LLMError as exc:
@@ -99,7 +104,9 @@ def score_jobs(
             if cancelled():
                 break
             try:
-                produced = _score_batch(profile, [job], client, settings, profile_version, model)
+                produced = _score_batch(
+                    profile, [job], client, settings, profile_version, model, budget
+                )
             except LLMError as exc:
                 bus.warn(
                     f"{job.get('title', 'A posting')} could not be scored: {exc}", stage="score"
@@ -119,12 +126,23 @@ def _score_batch(
     settings: Settings,
     profile_version: int,
     model: str,
+    budget: Budget | None = None,
 ) -> dict[str, Score]:
+    words = budget.rationale_words if budget else 28
+    skills = budget.profile_skills if budget else 70
     payload = client.complete_json(
         prompts.SCORE_SYSTEM,
-        prompts.score_user(profile, batch, settings.matching.description_chars),
+        prompts.score_user(
+            profile,
+            batch,
+            settings.matching.description_chars,
+            rationale_words=words,
+            skill_limit=skills,
+        ),
         temperature=0.1,
-        max_tokens=900 + 320 * len(batch),
+        # Capped to the budget as well as the batch, or a chatty model undoes
+        # the saving the shorter rationale was meant to make.
+        max_tokens=400 + (90 + round(words * 1.6)) * len(batch),
     )
     entries = payload.get("scores") if isinstance(payload, dict) else payload
     if not isinstance(entries, list):

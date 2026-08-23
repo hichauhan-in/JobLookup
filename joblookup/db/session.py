@@ -42,10 +42,22 @@ def db_path(storage_root: Path | None = None) -> Path:
     return ensure_dir(root) / DB_NAME
 
 
+#: Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves an
+#: existing table alone, so a new column has to be added explicitly or every
+#: database created before it would break.
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("crawl_run", "tokens", "TEXT NOT NULL DEFAULT '{}'"),
+)
+
+
 def apply_schema(path: Path) -> None:
     sql = (package_dir() / "db" / "schema.sql").read_text(encoding="utf-8")
     with sqlite3.connect(path) as conn:
         conn.executescript(sql)
+        for table, column, definition in _ADDED_COLUMNS:
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def connect(storage_root: Path | None = None) -> sqlite3.Connection:

@@ -102,6 +102,12 @@ class LLMConfig(BaseModel):
     copilot_cli: CopilotCliConfig = Field(default_factory=CopilotCliConfig)
     openai_compat: OpenAICompatConfig = Field(default_factory=OpenAICompatConfig)
     anthropic: AnthropicConfig = Field(default_factory=AnthropicConfig)
+    #: Let the app pick the model and how much detail to send, from one dial.
+    #: Off means the per-provider model and reasoning settings above are used
+    #: exactly as written.
+    auto: bool = True
+    #: 0 spends as little as possible, 100 spends whatever it takes.
+    economy: int = Field(default=50, ge=0, le=100)
     #: How many times to re-ask when a reply will not parse as JSON.
     json_retries: int = 2
     #: Requests in flight at once. Copilot rate-limits, so keep this modest.
@@ -119,6 +125,9 @@ class SearchConfig(BaseModel):
     #: geography and filters results down to remote roles. See sources/regions.py
     #: for the codes; it is not imported here to keep config free of dependencies.
     region: str = "in"
+    #: Off hides the country pack entirely and hands the Sources screen back to
+    #: manual configuration, for people who would rather choose everything.
+    use_region: bool = True
     #: Drop anything not positively identified as remote. Independent of the pack,
     #: so "India, but only remote roles" is a combination the user can ask for.
     remote_only: bool = False

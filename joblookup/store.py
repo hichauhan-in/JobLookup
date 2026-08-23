@@ -477,9 +477,31 @@ def save_scores(scores: list[Score]) -> None:
         )
 
 
-def clear_scores() -> None:
+def clear_scores() -> int:
+    """Forget every judgement, keeping the postings themselves.
+
+    The postings stay so the next match run has something to work on without
+    re-crawling. Returns how many were forgotten.
+    """
     with db.transaction() as conn:
-        conn.execute("DELETE FROM job_score")
+        cursor = conn.execute("DELETE FROM job_score")
+    return cursor.rowcount
+
+
+def clear_postings(*, keep_tracked: bool = True) -> dict[str, int]:
+    """Start again: remove stored postings and everything derived from them.
+
+    A posting you have applied to is kept by default, because deleting it would
+    take the application with it and that is never what "clear my matches" is
+    meant to do. CVs, your profile and your source setup are untouched either
+    way.
+    """
+    with db.transaction() as conn:
+        tracked = "WHERE id NOT IN (SELECT job_id FROM application)" if keep_tracked else ""
+        before = conn.execute("SELECT COUNT(*) AS n FROM job").fetchone()["n"]
+        conn.execute(f"DELETE FROM job {tracked}")
+        after = conn.execute("SELECT COUNT(*) AS n FROM job").fetchone()["n"]
+    return {"removed": before - after, "kept": after}
 
 
 # --- applications ------------------------------------------------------------
@@ -522,6 +544,13 @@ def list_applications() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def delete_application(job_id: int) -> bool:
+    """Stop tracking one job. The posting itself stays in your matches."""
+    with db.transaction() as conn:
+        cursor = conn.execute("DELETE FROM application WHERE job_id = ?", (job_id,))
+    return cursor.rowcount > 0
+
+
 # --- crawl runs --------------------------------------------------------------
 
 
@@ -534,13 +563,97 @@ def start_run(source_keys: list[str]) -> int:
     return int(cursor.lastrowid)
 
 
-def finish_run(run_id: int, *, status: str, stats: dict[str, Any], error: str = "") -> None:
+def finish_run(
+    run_id: int,
+    *,
+    status: str,
+    stats: dict[str, Any],
+    error: str = "",
+    tokens: dict[str, Any] | None = None,
+) -> None:
     with db.transaction() as conn:
         conn.execute(
             "UPDATE crawl_run SET finished_at = datetime('now'), status = ?, stats = ?, "
-            "error = ? WHERE id = ?",
-            (status, json.dumps(stats, ensure_ascii=False), error, run_id),
+            "error = ?, tokens = ? WHERE id = ?",
+            (
+                status,
+                json.dumps(stats, ensure_ascii=False),
+                error,
+                json.dumps(tokens or {}, ensure_ascii=False),
+                run_id,
+            ),
         )
+
+
+def token_summary(limit: int = 50) -> dict[str, Any]:
+    """What the model has cost across recent searches.
+
+    Every figure is an estimate; see llm/usage.py for why, and the UI says so
+    wherever these numbers appear.
+    """
+    runs = search_history(limit=limit)
+    total = 0
+    calls = 0
+    by_purpose: dict[str, int] = {}
+    scored: list[dict[str, Any]] = []
+
+    for run in runs:
+        tokens = run.get("tokens") or {}
+        if not tokens.get("calls"):
+            continue
+        total += int(tokens.get("total_tokens") or 0)
+        calls += int(tokens.get("calls") or 0)
+        for purpose, entry in (tokens.get("by_purpose") or {}).items():
+            by_purpose[purpose] = by_purpose.get(purpose, 0) + int(entry.get("total_tokens") or 0)
+        scored.append(
+            {
+                "run_id": run["id"],
+                "started_at": run["started_at"],
+                "tokens": int(tokens.get("total_tokens") or 0),
+                "calls": int(tokens.get("calls") or 0),
+                "postings": int((run.get("stats") or {}).get("kept") or 0),
+            }
+        )
+
+    return {
+        "total_tokens": total,
+        "calls": calls,
+        "runs_measured": len(scored),
+        "by_purpose": by_purpose,
+        "recent": scored[:12],
+        "average_per_run": round(total / len(scored)) if scored else 0,
+    }
+
+
+def add_run_tokens(run_id: int, tokens: dict[str, Any]) -> dict[str, Any]:
+    """Add what the model cost to a run, keeping anything already recorded.
+
+    Matching runs after the crawl row is closed, and a manual re-score later adds
+    more, so this accumulates rather than overwrites.
+    """
+    if not tokens.get("calls"):
+        return {}
+    with db.transaction() as conn:
+        row = conn.execute("SELECT tokens FROM crawl_run WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            return {}
+        merged = db.loads(row["tokens"], {})
+        for key in ("calls", "input_tokens", "output_tokens", "total_tokens"):
+            merged[key] = int(merged.get(key) or 0) + int(tokens.get(key) or 0)
+        merged["measured"] = bool(merged.get("measured")) or bool(tokens.get("measured"))
+
+        purposes = merged.get("by_purpose") or {}
+        for name, entry in (tokens.get("by_purpose") or {}).items():
+            into = purposes.setdefault(name, {})
+            for key in ("calls", "input_tokens", "output_tokens", "total_tokens"):
+                into[key] = int(into.get(key) or 0) + int(entry.get(key) or 0)
+        merged["by_purpose"] = purposes
+
+        conn.execute(
+            "UPDATE crawl_run SET tokens = ? WHERE id = ?",
+            (json.dumps(merged, ensure_ascii=False), run_id),
+        )
+    return merged
 
 
 def recent_runs(limit: int = 10) -> list[dict[str, Any]]:
@@ -554,6 +667,7 @@ def recent_runs(limit: int = 10) -> list[dict[str, Any]]:
         entry = dict(row)
         entry["sources"] = db.loads(entry.get("sources"), [])
         entry["stats"] = db.loads(entry.get("stats"), {})
+        entry["tokens"] = db.loads(entry.get("tokens"), {})
         result.append(entry)
     return result
 
@@ -607,6 +721,7 @@ def search_history(limit: int = 50) -> list[dict[str, Any]]:
         entry = dict(row)
         entry["sources"] = db.loads(entry.get("sources"), [])
         entry["stats"] = db.loads(entry.get("stats"), {})
+        entry["tokens"] = db.loads(entry.get("tokens"), {})
         history.append(entry)
     return history
 

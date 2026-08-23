@@ -28,11 +28,13 @@ export const app = {
   },
 };
 
+// In the order the work actually happens: say who you are, see what came back,
+// track what you did about it, then the setup you rarely revisit.
 const ROUTES = [
   { path: "dashboard", label: "Dashboard", render: renderDashboard },
+  { path: "profile", label: "Profile", render: renderProfile },
   { path: "matches", label: "Matches", render: renderMatches, count: (s) => s.counts?.scored },
   { path: "applications", label: "Applications", render: renderApplications, count: (s) => s.counts?.tracked },
-  { path: "profile", label: "Profile", render: renderProfile },
   { path: "sources", label: "Sources", render: renderSources, count: (s) => s.counts?.sources_enabled },
   { path: "history", label: "History", render: renderHistory },
   { path: "settings", label: "Settings", render: renderSettings },

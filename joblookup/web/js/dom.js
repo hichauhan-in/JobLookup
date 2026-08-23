@@ -54,6 +54,16 @@ export function spinner(size = 20) {
   });
 }
 
+/** One big number with its caption. The unit every summary strip is built from. */
+export function stat(value, label) {
+  return el(
+    "div",
+    { class: "stat" },
+    el("div", { class: "value", text: String(value ?? 0) }),
+    el("div", { class: "label", text: label })
+  );
+}
+
 /** A grey bar standing in for content that has not arrived yet. */
 export function skeleton(modifier = "") {
   return el("div", { class: `skeleton${modifier ? ` ${modifier}` : ""}` });

@@ -22,6 +22,7 @@ from joblookup.config import Settings
 from joblookup.cv.profile import profile_text
 from joblookup.events import EventBus
 from joblookup.llm import LLMClient
+from joblookup.llm import budget as llm_budget
 from joblookup.llm.base import LLMUnavailableError
 from joblookup.matching.prefilter import prefilter
 from joblookup.matching.recall import recall
@@ -41,6 +42,17 @@ def run_matching(
     *,
     cancelled: Cancelled = lambda: False,
 ) -> dict[str, Any]:
+    # Auto mode decides the model and how much detail to send before anything is
+    # spent, so every stage below runs on the settings the dial actually chose.
+    settings, budget = llm_budget.effective(settings, client.status().models)
+    if budget is not None:
+        bus.log(
+            f"Auto: {budget.label} - {budget.model or 'default model'}, "
+            f"{budget.description_chars} characters per posting, "
+            f"batches of {budget.score_batch_size}.",
+            stage="score",
+        )
+
     profile_row = store.get_profile()
     profile = profile_row.get("data") or {}
     version = int(profile_row.get("version") or 1)
@@ -118,7 +130,9 @@ def run_matching(
     batches = -(-len(kept) // max(1, settings.matching.score_batch_size))
     bus.stage_start("score", f"Judging {len(kept)} posting(s) in {batches} model call(s)")
     try:
-        scores = score_jobs(profile, kept, client, settings, bus, version, cancelled=cancelled)
+        scores = score_jobs(
+            profile, kept, client, settings, bus, version, cancelled=cancelled, budget=budget
+        )
     except LLMUnavailableError as exc:
         bus.warn(str(exc), stage="score")
         raise
@@ -141,4 +155,5 @@ def run_matching(
         "dropped": dropped,
         "bands": bands,
         "model_calls": batches,
+        "budget": budget.to_dict() if budget else None,
     }

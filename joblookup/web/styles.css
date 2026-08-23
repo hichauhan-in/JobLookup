@@ -93,19 +93,20 @@ a:hover { text-decoration: underline; }
 .brand svg { width: 28px; height: 28px; }
 .brand-name { font-weight: 650; letter-spacing: 0.2px; font-size: 15px; }
 
-.nav { display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.nav { display: flex; flex-direction: column; gap: 1px; overflow-y: auto; }
 .nav button {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--s2);
   width: 100%;
-  padding: 10px 12px;
+  padding: 7px 11px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   color: var(--muted);
   font: inherit;
+  font-size: 13px;
   font-weight: 500;
   text-align: left;
   cursor: pointer;
@@ -114,9 +115,9 @@ a:hover { text-decoration: underline; }
 .nav button:hover { background: var(--panel-2); color: var(--text); }
 .nav button.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .nav .count {
-  font-size: 11px;
+  font-size: 10.5px;
   font-variant-numeric: tabular-nums;
-  padding: 1px 8px;
+  padding: 1px 7px;
   border-radius: 999px;
   background: var(--panel-3);
   color: var(--muted);
@@ -280,6 +281,74 @@ a:hover { text-decoration: underline; }
 .role-why { font-size: 11.5px; color: var(--muted); line-height: 1.45; }
 .role-reach { font-size: 11px; color: var(--accent); }
 .role-suggestion.is-stretch .role-reach { color: var(--stretch); }
+
+/* --- what the guided setup did ---------------------------------------------
+   Applying a pack changes a lot at once, so it says exactly what it did and
+   leaves the list there to be checked rather than flashing a toast. */
+.review-panel {
+  margin-top: var(--s4);
+  padding: var(--s4);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 7%, var(--panel-2));
+}
+
+/* The companies a board is watching, visible without opening anything. */
+.company-preview { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.company-preview.wrap { margin-top: 0; }
+.company-pill {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-soft);
+  background: var(--panel-2);
+  color: var(--muted);
+}
+button.company-pill { cursor: pointer; font-weight: 500; color: var(--accent); }
+button.company-pill:hover { border-color: var(--accent-line); filter: none; }
+
+/* --- what a search costs ---------------------------------------------------- */
+.budget-readout { display: flex; align-items: baseline; gap: var(--s3); flex-wrap: wrap; }
+.budget-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: var(--s2);
+}
+.budget-fact {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 9px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+.budget-fact-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--faint); }
+.budget-fact-value { font-size: 13.5px; font-weight: 600; }
+.budget-fact-note { font-size: 11.5px; color: var(--muted); }
+
+.budget-bars { display: flex; flex-direction: column; gap: var(--s3); }
+.budget-bar-head { display: flex; justify-content: space-between; font-size: 12.5px; gap: var(--s3); }
+.budget-bar-track {
+  height: 8px;
+  margin: 5px 0 3px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--line-soft);
+  overflow: hidden;
+}
+.budget-bar-fill { height: 100%; background: var(--accent); }
+.economy-slider { max-width: 100%; }
+
+/* Applications: the status is changed in the list, so the control has to sit
+   comfortably in a table cell rather than dominate the row. */
+.status-select { min-width: 130px; padding: 5px 8px; font-size: 12.5px; }
+table.applications td { vertical-align: middle; }
+table.applications td .row.tight { justify-content: flex-end; flex-wrap: nowrap; }
+
+/* For the one line in a dialog that says what will not come back. */
+.danger-text { color: var(--danger); }
 
 /* --- tabs ------------------------------------------------------------------ */
 .tab-bar {

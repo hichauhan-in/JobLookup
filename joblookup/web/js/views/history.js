@@ -7,12 +7,12 @@
 
 import { api } from "../api.js";
 import { app } from "../app.js";
-import { card, el, mount, openDialog } from "../dom.js";
-import { plural, relativeDate } from "../format.js";
+import { card, el, mount, openDialog, stat } from "../dom.js";
+import { humanTokens, plural, relativeDate, utc } from "../format.js";
 import { fail, ok } from "../notify.js";
 
 export async function renderHistory(container) {
-  const payload = await api.history();
+  const [payload, spend] = await Promise.all([api.history(), api.spend().catch(() => null)]);
   const runs = payload.runs || [];
 
   const clearButton = el("button", {
@@ -42,6 +42,7 @@ export async function renderHistory(container) {
       )
     ),
     el("div", { class: "stack" },
+      spend?.runs_measured ? spendCard(spend) : null,
       runs.length
         ? card({ title: `${plural(runs.length, "search", "es")} recorded` }, historyTable(runs, container))
         : card(
@@ -55,6 +56,28 @@ export async function renderHistory(container) {
   );
 }
 
+/** What the model has cost across the searches that recorded it. */
+function spendCard(spend) {
+  const purposes = Object.entries(spend.by_purpose || {}).sort((a, b) => b[1] - a[1]);
+  return card(
+    {
+      title: "What the model has cost",
+      subtitle: `Estimated across ${plural(spend.runs_measured, "search", "es")}. Roughly four characters per token, which is close enough to compare settings but is not a bill.`,
+    },
+    el("div", { class: "grid four" },
+      stat(`~${humanTokens(spend.total_tokens)}`, "tokens in total"),
+      stat(`~${humanTokens(spend.average_per_run)}`, "per search"),
+      stat(String(spend.calls), "model calls"),
+      stat(String(spend.runs_measured), "searches measured")
+    ),
+    purposes.length
+      ? el("p", { class: "small-text muted", style: { margin: "12px 0 0" },
+          text: "Split by purpose: " + purposes.map(([name, tokens]) => `${name} ~${humanTokens(tokens)}`).join(", ") + ".",
+        })
+      : null
+  );
+}
+
 function historyTable(runs, container) {
   return el("table", {},
     el("thead", {}, el("tr", {},
@@ -62,15 +85,17 @@ function historyTable(runs, container) {
       el("th", { text: "Status" }),
       el("th", { text: "Found" }),
       el("th", { text: "New" }),
+      el("th", { title: "Estimated model tokens for this search" }, "Tokens"),
       el("th", { text: "Sources" }),
       el("th", { text: "" })
     )),
     el("tbody", {},
       ...runs.map((run) => el("tr", {},
-        el("td", { title: exactTime(run.started_at) }, relativeDate(asIso(run.started_at))),
+        el("td", { title: exactTime(run.started_at) }, relativeDate(utc(run.started_at), "just now")),
         el("td", {}, el("span", { class: `chip ${statusTone(run.status)}`, text: run.status })),
         el("td", { text: String(run.result_count ?? 0) }),
         el("td", { text: String(run.new_count ?? 0) }),
+        el("td", {}, tokenCell(run)),
         el("td", { class: "muted", text: (run.sources || []).join(", ") || "none" }),
         el("td", {},
           el("div", { class: "row tight" },
@@ -88,6 +113,16 @@ function historyTable(runs, container) {
       ))
     )
   );
+}
+
+/** What the model cost for one search, or a dash when it never ran. */
+function tokenCell(run) {
+  const tokens = run.tokens || {};
+  if (!tokens.calls) return el("span", { class: "muted", text: "none" });
+  return el("span", {
+    title: `${tokens.calls} model call(s), about ${tokens.input_tokens} in and ${tokens.output_tokens} out. Estimated.`,
+    text: `~${humanTokens(tokens.total_tokens)}`,
+  });
 }
 
 function statusTone(status) {
@@ -153,14 +188,9 @@ async function showResults(run) {
   );
 }
 
-/** SQLite writes "YYYY-MM-DD HH:MM:SS" in UTC with no marker of either fact. */
-function asIso(stamp) {
-  return stamp ? `${String(stamp).replace(" ", "T")}Z` : null;
-}
-
 /** A search happened at a moment; "just posted" is language for a job, not a run. */
 function exactTime(stamp) {
-  const iso = asIso(stamp);
+  const iso = utc(stamp);
   if (!iso) return "an unknown time";
   const when = new Date(iso);
   return Number.isNaN(when.getTime()) ? "an unknown time" : when.toLocaleString();

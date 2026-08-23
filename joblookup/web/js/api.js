@@ -46,6 +46,8 @@ export const api = {
 
   settings: () => api.get("/api/settings"),
   providers: () => api.get("/api/llm/providers"),
+  budget: (options = {}) => api.post("/api/llm/budget", options),
+  spend: () => api.get("/api/llm/spend"),
   saveSettings: (patch) => api.post("/api/settings", { patch }),
   setProvider: (choice) => api.post("/api/llm/provider", choice),
   testProvider: () => api.post("/api/llm/test"),
@@ -64,7 +66,9 @@ export const api = {
   toggleSource: (key, enabled) => api.post(`/api/sources/${key}/enabled`, { enabled }),
   ackRisk: (key, acknowledged) => api.post(`/api/sources/${key}/risk`, { acknowledged }),
   configureSource: (key, config) => api.post(`/api/sources/${key}/config`, { config }),
-  setRegion: (code, apply = false) => api.post("/api/sources/region", { code, apply }),
+  setRegion: (code, apply = false, options = {}) =>
+    api.post("/api/sources/region", { code, apply, ...options }),
+  clearRegion: () => api.post("/api/sources/region/clear"),
   setRemoteOnly: (value) => api.saveSettings({ search: { remote_only: value } }),
   suggestCompanies: (options = {}) => api.post("/api/sources/suggest", options),
   suggestRoles: () => api.post("/api/profile/roles"),
@@ -85,7 +89,9 @@ export const api = {
   job: (id) => api.get(`/api/jobs/${id}`),
   hideJob: (id, hidden) => api.post(`/api/jobs/${id}/hide?hidden=${hidden}`),
   setApplication: (id, status, notes) => api.post(`/api/jobs/${id}/application`, { status, notes }),
+  deleteApplication: (id) => api.del(`/api/jobs/${id}/application`),
   applications: () => api.get("/api/applications"),
+  resetMatches: (options = {}) => api.post("/api/matches/reset", options),
 
   tailor: (id, cvId) => api.post(`/api/jobs/${id}/tailor`, { cv_id: cvId ?? null }),
 

@@ -209,41 +209,42 @@ falling back to the titles you have held and the obvious steps up from them.
 
 ### 3. Choose your sources
 
-The Sources screen has four sections. Every source carries a **?** that opens
-step-by-step instructions written for that specific site — where to get its key,
-or where to find the company name.
+The Sources screen has four sections, and the first one does the work.
 
-**Start at the top, with "Where are you looking?".** Pick your country, or
-**Remote (anywhere)**, and press **Set up this pack**. This is the same set of
-sources as the three sections below it, but shortlisted and ordered by what
-actually works where you are, with that country's settings filled in. It
-switches on everything in the pack that can already run, fills in country
-settings for the rest, and tells you plainly what still needs a free key, a
-company name or a login. It never enables anything that needs a login. The
-default pack is India.
+**Start at "Where are you looking?".** Pick your country, or **Remote
+(anywhere)**, choose how many companies you want watched, and press **Set up
+everything**. In one action it:
+
+- switches on the sources worth your time in that country
+- fills in that country's settings, such as the right Adzuna country codes
+- gives every company board in the pack a list of employers, ranked against your
+  CV and that country, from a catalogue checked against the live APIs
+- tells you exactly what it did, and what still needs a free key or a login
+
+It then shows the full list of companies it chose, grouped by board, so the
+choice can actually be reviewed rather than taken on trust. Everything it
+configured appears in the sections below, tagged **from pack**, with the
+companies listed inline. Edit any of it and it becomes yours: the tag goes, and
+**Undo this pack** will leave your version alone while taking back the rest.
+
+Nothing that needs a login is ever switched on for you.
+
+**Prefer to do it yourself?** Turn **Use guided setup** off. The country card
+collapses to that one switch, no country settings are applied, and the three
+sections below become the whole story.
 
 Picking **Remote (anywhere)** also changes what you get back: any posting not
 positively identified as a remote role is dropped before it is scored. There is
 also an **Only show remote roles** switch beside the country, so "India, but
 only roles I can do from home" is a combination you can ask for directly.
 
-**Then add company boards.** Open the careers page of a company you would
-actually like to work for, take the company's short name out of the address, and
-paste it into **Sources → Company job boards**. For
-`https://boards.greenhouse.io/stripe` you enter `stripe`. These postings are the
-freshest and cleanest available anywhere — no aggregator lag, full descriptions,
-and the apply link goes straight to the employer. This is the single
-highest-value thing you can do here, and it is worth revisiting whenever you
-think of another company.
+**The sections below** are the same sources in full. Every source carries a **?**
+that opens step-by-step instructions written for that specific site — where to
+get its key, or where to find the company name.
 
-**If no companies spring to mind**, press **Not sure which companies to watch?**
-at the top of Sources and let it pick. It ranks a catalogue of employers against
-your CV and what you are looking for, so a data engineer and a designer get
-different lists, and adds the ones that fit to the right boards. Every company
-in that catalogue was fetched from the live API before being written down.
-
-Workday is the exception: it is the board most large employers use, and it is
-addressed by pasting the whole careers page address rather than a short name.
+Workday is the exception among boards: it is the one most large employers use,
+and it is addressed by pasting the whole careers page address rather than a short
+name.
 
 The keyless public feeds are already on and need nothing.
 
@@ -284,6 +285,24 @@ machine generated. You get a `.docx`, a Markdown copy, and an interview prep
 sheet carrying everything you could not honestly claim.
 
 Set a status on the posting and it appears under **Applications**.
+
+The **Applications** screen is where you move things along. Each row has its own
+status picker, so marking something applied or rejected takes one click and never
+leaves the list, and **Remove** stops tracking a role you have gone off. Removing
+a tracked role leaves the posting itself in your matches.
+
+### Starting over
+
+**Matches → Start over** clears what has been judged. There are two levels:
+
+* **Scores only** (the default) throws away the model's verdicts and keeps the
+  postings, so **Score again** re-judges them without another search. This is
+  what you want after changing your CV or your target titles.
+* **Postings too** empties the stored postings as well, for a genuinely clean
+  slate. Anything under **Applications** is kept unless you say otherwise,
+  because deleting a posting would take the application with it.
+
+Neither touches your CVs, your profile, your sources or your search history.
 
 ---
 
@@ -434,20 +453,20 @@ and descriptions separately and each posting costs a second request; the
 
 #### Letting the app pick the companies
 
-Nobody has a hundred company names in their head, so **Not sure which companies
-to watch?** picks them. Two things make it worth trusting:
+Nobody has a hundred company names in their head, so the guided setup picks them.
+Two things make it worth trusting:
 
 - **Every company in the catalogue was checked against the live API.** Of several
   hundred obvious-looking names tried, well under half actually resolved. Names
   are not guessable, which is the whole reason this exists.
 - **It is ranked against you, not a generic top-100.** Each company carries tags,
   which are matched against the skills and titles in your profile, then weighted
-  by whether they hire where you are looking and how well they pay. Each
-  suggestion shows the reason it was picked.
+  by whether they hire where you are looking and how well they pay. Every
+  suggestion shows the reason it was picked, and the full list is shown after
+  setup so you can check it.
 
-The picks are spread across boards so no single one dominates, and by default
-they are added to whatever you already have rather than replacing it. A company
-that later leaves its board simply returns nothing and is skipped.
+The picks are spread across boards so no single one dominates. A company that
+later leaves its board simply returns nothing and is skipped.
 
 Personio is the other exception: it publishes no description text and no posting
 date, so its roles are matched on title, department and seniority alone, and are
@@ -576,11 +595,69 @@ across a seniority, discipline or location difference.
 
 ---
 
+## What a search costs
+
+Almost everything the model is asked to do is scoring: judging a shortlist of
+postings against your profile. Measured on a real search, one scoring call at
+the shipped defaults breaks down like this:
+
+| Part | Share of the call |
+| --- | --- |
+| The job descriptions themselves | about 90% |
+| The model's written answers | about 20% of the total, counting output |
+| The scoring instructions, sent once per call | about 7% |
+| Your profile, repeated on every call | about 2% |
+
+So four things decide the bill, and only one of them is the model:
+
+1. **How many postings reach the model.** Linear. This is the **how deep to
+   search** slider on the Dashboard, because it is a coverage decision.
+2. **How much of each description is sent.** The biggest lever here: 600
+   characters against 6000 is a threefold difference in the whole search.
+3. **How much the model writes back.** Roughly a fifth of the total.
+4. **Which model answers.** This barely changes the token count and changes the
+   cost enormously, because a premium model bills at a multiple of a small one.
+
+### The spending dial
+
+**Settings → Model spending** owns items 2, 3 and 4 from one slider, and is on
+**auto** by default. Dragging it re-estimates the cost live and shows what it
+picked and why:
+
+| Position | Model | Per posting | Batch | Answer length | A 300-posting search |
+| --- | --- | --- | --- | --- | --- |
+| Bare minimum | smallest available | 600 chars | 24 | 12 words | about 93k tokens |
+| Frugal | small and fast | 1,100 chars | 18 | 18 words | about 136k tokens |
+| Balanced (default) | small and fast | 1,800 chars | 12 | 28 words | about 198k tokens |
+| Thorough | balanced | 3,200 chars | 8 | 38 words | about 316k tokens |
+| No compromise | most capable | 6,000 chars | 5 | 50 words | about 546k tokens |
+
+Auto deliberately never touches how many postings are scored. Two dials that
+both quietly reduce coverage would be impossible to reason about, so coverage
+stays on the Dashboard and cost-per-posting stays here.
+
+Turning **auto** off hands the model and reasoning settings straight back to
+you: whatever you set on the Language model card is used exactly as written, and
+the dial is disabled.
+
+### Where the numbers come from
+
+None of the providers this app can use reports token usage reliably, so every
+figure shown is an **estimate**, at about four characters per token, and is
+labelled as one wherever it appears. It is accurate enough for the decision it
+exists to inform: on a measured run of 145 postings the estimate was within a
+fraction of a percent of the recorded total. For exact billing, read your
+provider's own dashboard.
+
+**History** records what each search cost, and totals it across searches. A
+search that never called the model shows "none" rather than a zero.
+
 ## Settings
 
 Everything lives in `config/local.yaml`, written for you by the Settings screen
 and left alone by updates. `config/default.yaml` holds the defaults and is
 replaced when you update, so do not edit it.
+
 
 Any value can be overridden for one run with an environment variable named
 `JOBLOOKUP_<SECTION>_<KEY>`:
@@ -602,6 +679,7 @@ sidebar takes you straight to it.
 
 | Group | Covers |
 | --- | --- |
+| Model spending | Auto on or off, and the one dial that sets model, detail and answer length |
 | Language model | Provider, model, reasoning effort, context window, request timeout |
 | Searching | Recency window, per-source caps, pacing, timeouts, archiving |
 | How many model calls to spend | Recall depth, prefilter, batch size, description length, concurrency, retries |
@@ -631,6 +709,28 @@ nothing leaves the machine at all.
 
 Your CVs, the postings, the scores and your application history live in
 `workspace\` and are never uploaded anywhere.
+
+### What reaches JobLookup
+
+There is no login, because the server is yours and it listens only on
+`127.0.0.1`. That is not enough on its own, so two things are checked on every
+request:
+
+* **The address you asked for.** A web page on any domain can point that domain
+  at `127.0.0.1` and become same-origin with JobLookup, which would hand it your
+  CVs. The browser cannot forge the `Host` header, so anything not addressed to
+  this machine is refused. Starting with `--host` set to something other than
+  loopback is a deliberate choice to be reachable, and turns this check off.
+* **Where the request came from.** Uploads and form posts cross origins without
+  a CORS preflight, so anything that changes state must carry a `Sec-Fetch-Site`
+  saying it started here. Command-line clients send no such header and are
+  allowed.
+
+Outbound requests are checked too. Sources are third parties and a third party
+can answer with a redirect, so each hop is re-checked rather than followed
+blindly, and anything resolving to loopback, a private range or a link-local
+address is refused. That is what stops an enabled feed being used to read this
+machine.
 
 ---
 

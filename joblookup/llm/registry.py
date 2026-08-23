@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from joblookup.config import LLMConfig, Settings
@@ -18,6 +19,7 @@ from joblookup.llm.base import (
 )
 from joblookup.llm.copilot_cli import CopilotCliProvider
 from joblookup.llm.openai_compat import OpenAICompatProvider
+from joblookup.llm.usage import record as record_usage
 from joblookup.llm.vscode_bridge import VSCodeBridgeProvider
 
 PROVIDER_KEYS = ("vscode", "copilot_cli", "openai_compat", "anthropic")
@@ -40,14 +42,22 @@ def build_provider(config: LLMConfig, key: str | None = None) -> LLMProvider:
 
 
 def all_statuses(config: LLMConfig) -> list[ProviderStatus]:
-    """Status of every provider, so the Settings screen can show the options."""
-    statuses: list[ProviderStatus] = []
-    for key in PROVIDER_KEYS:
-        try:
-            statuses.append(build_provider(config, key).status())
-        except Exception as exc:  # noqa: BLE001
-            statuses.append(ProviderStatus(key, key, False, str(exc)))
-    return statuses
+    """Status of every provider, so the Settings screen can show the options.
+
+    Every probe is a network call or a subprocess, and one unreachable endpoint
+    used to hold the whole screen for as long as its timeout. They run together
+    now, so the wait is the slowest single probe rather than the sum of four.
+    """
+    with ThreadPoolExecutor(max_workers=len(PROVIDER_KEYS)) as pool:
+        futures = {key: pool.submit(_status_of, config, key) for key in PROVIDER_KEYS}
+        return [futures[key].result() for key in PROVIDER_KEYS]
+
+
+def _status_of(config: LLMConfig, key: str) -> ProviderStatus:
+    try:
+        return build_provider(config, key).status()
+    except Exception as exc:  # noqa: BLE001
+        return ProviderStatus(key, key, False, str(exc))
 
 
 class LLMClient:
@@ -56,17 +66,41 @@ class LLMClient:
     Matching makes many calls and any one of them can come back as prose instead
     of JSON, or hit a transient rate limit. Handling that here keeps the scorer
     readable.
+
+    It is also the one place every request passes through, which makes it the
+    right place to count what those requests cost.
     """
 
-    def __init__(self, provider: LLMProvider, *, json_retries: int = 2) -> None:
+    def __init__(
+        self,
+        provider: LLMProvider,
+        *,
+        json_retries: int = 2,
+        purpose: str = "other",
+    ) -> None:
         self.provider = provider
         self.json_retries = max(0, json_retries)
+        #: What the next calls are for, so usage can be attributed.
+        self.purpose = purpose
 
     @classmethod
     def from_settings(cls, settings: Settings, provider_key: str | None = None) -> LLMClient:
         return cls(
             build_provider(settings.llm, provider_key),
             json_retries=settings.llm.json_retries,
+        )
+
+    def for_purpose(self, purpose: str) -> LLMClient:
+        """The same provider, with calls attributed to a different job."""
+        clone = LLMClient(self.provider, json_retries=self.json_retries, purpose=purpose)
+        return clone
+
+    def _note(self, messages: list[ChatMessage], reply: str) -> None:
+        record_usage(
+            self.purpose,
+            prompt="\n".join(message.content for message in messages),
+            reply=reply,
+            model=getattr(self.provider, "last_model", "") or "",
         )
 
     @property
@@ -89,9 +123,11 @@ class LLMClient:
         max_tokens: int | None = None,
     ) -> str:
         messages = [ChatMessage("system", system), ChatMessage("user", user)]
-        return self._with_retry(
+        reply = self._with_retry(
             lambda: self.provider.complete(messages, temperature=temperature, max_tokens=max_tokens)
         )
+        self._note(messages, reply)
+        return reply
 
     def complete_json(
         self,
@@ -117,6 +153,9 @@ class LLMClient:
                         expect_json=True,
                     )
                 )
+                # Retries are counted too: a reply that would not parse still
+                # cost what it cost.
+                self._note(attempt_messages, raw)
                 return extract_json(raw)
             except LLMUnavailableError:
                 raise

@@ -31,6 +31,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.websockets import WebSocketDisconnect
 
 from joblookup import __version__, doctor, store
@@ -43,7 +44,8 @@ from joblookup.config import (
 from joblookup.cv import SUPPORTED_SUFFIXES, UnreadableCV, extract_text
 from joblookup.db import session as db
 from joblookup.events import EventBus
-from joblookup.llm import LLMClient, all_statuses
+from joblookup.llm import LLMClient, all_statuses, usage
+from joblookup.llm import budget as llm_budget
 from joblookup.llm import presets as llm_presets
 from joblookup.llm.vscode_bridge import extension_state
 from joblookup.matching.pipeline import ProfileMissing, run_matching
@@ -152,6 +154,101 @@ def _inside(root: Path, candidate: Path) -> Path:
     return resolved
 
 
+#: Fields that are credentials rather than settings. The Settings screen needs
+#: to know whether one is set, never what it is, and a value that has been sent
+#: to a browser has been somewhere it can be read from.
+_SECRET_FIELDS = (("llm", "vscode", "token"),)
+
+#: What the browser sees instead. It is also what comes back if the screen ever
+#: posts the whole object, so it has to be recognisable on the way in.
+_REDACTED = "__set__"
+
+
+def _walk(payload: Any, path: tuple[str, ...]) -> dict[str, Any] | None:
+    """The dict holding ``path``'s last key, if the whole path exists."""
+    node = payload
+    for key in path[:-1]:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node if isinstance(node, dict) else None
+
+
+def _redact(payload: dict[str, Any]) -> dict[str, Any]:
+    for path in _SECRET_FIELDS:
+        node = _walk(payload, path)
+        if node is not None and node.get(path[-1]):
+            node[path[-1]] = _REDACTED
+    return payload
+
+
+def _keep_existing_secrets(patch: dict[str, Any]) -> dict[str, Any]:
+    """Drop any secret that came back as the placeholder we sent out.
+
+    Without this, a screen that reads settings and posts them back would write
+    the mask over the real value and quietly break the bridge.
+    """
+    for path in _SECRET_FIELDS:
+        node = _walk(patch, path)
+        if node is not None and node.get(path[-1]) == _REDACTED:
+            node.pop(path[-1])
+    return patch
+
+
+# --- who is allowed to ask ---------------------------------------------------
+#: Names that can only ever mean this machine. A request arriving as anything
+#: else reached us through somebody else's DNS, which is the rebinding attack.
+#: "0.0.0.0" is deliberately absent: it is a bind address meaning "every
+#: interface", never a name a browser would legitimately ask for.
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]", "::1"})
+
+_READ_ONLY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+class LocalOnly(BaseHTTPMiddleware):
+    """Two guards that together make the missing login unnecessary.
+
+    The server holds your CVs and can spend your model budget, and it has no
+    password because it is yours and it listens on loopback. Loopback alone is
+    not enough for either of the ways a web page can reach it:
+
+    *Rebinding.* A page on any domain can point that domain at 127.0.0.1 and
+    become same-origin with us, at which point the browser hands it everything.
+    The one thing it cannot forge is the ``Host`` header, so anything that does
+    not name this machine is refused.
+
+    *Cross-site writes.* A form post or a multipart upload crosses origins with
+    no preflight, so CORS never sees it. ``Sec-Fetch-Site`` is set by the
+    browser and not settable from script, so we require it to say the request
+    started here. Reads are left alone, since they are already same-origin only.
+    """
+
+    def __init__(self, app: Any, *, check_host: bool = True) -> None:
+        super().__init__(app)
+        self.check_host = check_host
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        if self.check_host:
+            host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip().lower()
+            if host and host not in _LOCAL_HOSTS:
+                return JSONResponse(
+                    {"detail": "JobLookup only answers requests addressed to this machine."},
+                    status_code=421,
+                )
+
+        if request.method.upper() not in _READ_ONLY_METHODS:
+            #: Absent means a non-browser client such as curl, which cannot be
+            #: a confused deputy for somebody else's page.
+            site = request.headers.get("sec-fetch-site", "same-origin")
+            if site not in ("same-origin", "none"):
+                return JSONResponse(
+                    {"detail": "That request did not come from JobLookup itself."},
+                    status_code=403,
+                )
+
+        return await call_next(request)
+
+
 # --- application -------------------------------------------------------------
 def create_app(settings: Settings | None = None) -> FastAPI:
     global _settings
@@ -169,10 +266,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=active.server.allowed_origins,
-            allow_credentials=True,
+            #: Credentials plus a wildcard makes Starlette echo whatever origin
+            #: asked, which would hand every site on the internet a session.
+            allow_credentials="*" not in active.server.allowed_origins,
             allow_methods=["*"],
             allow_headers=["*"],
         )
+
+    #: The name check only applies while we are on loopback. Binding anywhere
+    #: else is a deliberate choice to be reachable, and we cannot guess which
+    #: address the user will type. The cross-site check always applies.
+    app.add_middleware(
+        LocalOnly,
+        check_host=not active.server.multi_user and active.server.host in _LOCAL_HOSTS,
+    )
 
     _register_routes(app)
 
@@ -237,8 +344,8 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - one router, read top
         """
         settings = current_settings()
         return {
-            "settings": settings.model_dump(mode="json"),
-            "overrides": read_local_overrides(),
+            "settings": _redact(settings.model_dump(mode="json")),
+            "overrides": _redact(read_local_overrides()),
             "presets": llm_presets.as_dicts(),
             "secrets": secrets.status(),
         }
@@ -248,14 +355,67 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - one router, read top
         """Probe every provider. Slow by nature, so it is asked for on its own."""
         return {"providers": [status.to_dict() for status in all_statuses(current_settings().llm)]}
 
+    @app.post("/api/llm/budget")
+    def post_budget(body: schemas.BudgetPreview) -> dict[str, Any]:
+        """What one position on the economy dial would cost, before choosing it."""
+        settings = current_settings()
+        economy = body.economy if body.economy is not None else settings.llm.economy
+        models = body.models
+        if not models:
+            try:
+                models = client_for(settings).status().models
+            except Exception:  # noqa: BLE001
+                models = []
+
+        resolved = llm_budget.resolve(economy, models)
+        postings = body.postings or settings.matching.prefilter_keep
+        estimate = usage.estimate_search(
+            postings=postings,
+            batch_size=resolved.score_batch_size,
+            description_chars=resolved.description_chars,
+            rationale_words=resolved.rationale_words,
+        )
+        manual = usage.estimate_search(
+            postings=postings,
+            batch_size=settings.matching.score_batch_size,
+            description_chars=settings.matching.description_chars,
+            rationale_words=28,
+        )
+        return {
+            "budget": resolved.to_dict(),
+            "estimate": estimate.to_dict(),
+            "manual_estimate": manual.to_dict(),
+            "breakdown": [
+                part.to_dict()
+                for part in usage.explain_search(
+                    estimate,
+                    batch_size=resolved.score_batch_size,
+                    description_chars=resolved.description_chars,
+                )
+            ],
+            "models": [
+                {"name": name, "tier": tier, "label": llm_budget.TIER_LABELS.get(tier, "")}
+                for name, tier in llm_budget.rank_models(models)
+            ],
+            "auto": settings.llm.auto,
+        }
+
+    @app.get("/api/llm/spend")
+    def get_spend() -> dict[str, Any]:
+        """What the model has cost recently, summed over recorded searches."""
+        return store.token_summary()
+
     @app.post("/api/settings")
     def post_settings(body: schemas.SettingsPatch) -> dict[str, Any]:
         try:
-            save_local_overrides(body.patch)
+            save_local_overrides(_keep_existing_secrets(body.patch))
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(400, f"Those settings were rejected: {exc}") from exc
         settings = reload_settings()
-        return {"settings": settings.model_dump(mode="json"), "overrides": read_local_overrides()}
+        return {
+            "settings": _redact(settings.model_dump(mode="json")),
+            "overrides": _redact(read_local_overrides()),
+        }
 
     @app.post("/api/llm/provider")
     def post_provider(body: schemas.ProviderChoice) -> dict[str, Any]:
@@ -450,13 +610,16 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - one router, read top
     @app.get("/api/sources")
     def get_sources() -> dict[str, Any]:
         settings = current_settings()
+        #: Built once and handed to the region view, which needs the same rows.
+        sources = registry.list_sources(settings)
         return {
-            "sources": registry.list_sources(settings),
+            "sources": sources,
             "tier_b_enabled": settings.tier_b.enabled,
             "risk_notice": RISK_NOTICE,
             "playwright": tier_b_browser.availability(),
-            "region": registry.region_view(settings.search.region, settings),
+            "region": registry.region_view(settings.search.region, settings, sources=sources),
             "remote_only": settings.search.remote_only,
+            "use_region": settings.search.use_region,
             "regions": [
                 {"code": region.code, "name": region.name} for region in regions.all_regions()
             ],
@@ -468,11 +631,28 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - one router, read top
             raise HTTPException(404, f"There is no country pack called '{body.code}'.")
         save_local_overrides({"search": {"region": body.code}})
         settings = reload_settings()
-        report = registry.apply_region(body.code, settings) if body.apply else None
+        report = (
+            registry.apply_region(
+                body.code, settings, companies=body.companies, replace=body.replace
+            )
+            if body.apply
+            else None
+        )
         return {
             "sources": registry.list_sources(settings),
             "region": registry.region_view(body.code, settings),
             "applied": report,
+        }
+
+    @app.post("/api/sources/region/clear")
+    def post_region_clear() -> dict[str, Any]:
+        """Undo what the current pack configured, leaving anything you added."""
+        settings = current_settings()
+        report = registry.clear_region(settings.search.region)
+        return {
+            "sources": registry.list_sources(settings),
+            "region": registry.region_view(settings.search.region, settings),
+            "cleared": report,
         }
 
     # --- suggestions -------------------------------------------------------
@@ -550,7 +730,12 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - one router, read top
     def post_source_config(key: str, body: schemas.SourceConfigPatch) -> dict[str, Any]:
         if registry.get_adapter(key) is None:
             raise HTTPException(404, f"There is no source called '{key}'.")
-        registry.update_config(key, body.config)
+        patch = dict(body.config)
+        # Editing the company list by hand makes it yours, so it stops being
+        # labelled as the pack's and stops being cleared with the pack.
+        if "slugs" in patch:
+            patch["from_region"] = ""
+        registry.update_config(key, patch)
         return {"sources": registry.list_sources(current_settings())}
 
     @app.post("/api/sources/{key}/signin")
@@ -666,18 +851,34 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - one router, read top
         settings = _tuned(current_settings(), body)
 
         def work(bus: EventBus, job: Job) -> dict[str, Any]:
-            stats = crawl.run_crawl(
-                settings, bus, source_keys=body.sources, cancelled=job.cancel_requested.is_set
-            )
-            result: dict[str, Any] = {"crawl": stats.to_dict()}
-            if body.then_match and not job.cancel_requested.is_set():
-                try:
-                    result["match"] = run_matching(
-                        settings, client_for(settings), bus, cancelled=job.cancel_requested.is_set
-                    )
-                except ProfileMissing as exc:
-                    bus.warn(str(exc), stage="score")
-                    result["match"] = {"skipped": str(exc)}
+            recorder = usage.UsageRecorder()
+            usage.set_recorder(recorder)
+            try:
+                stats = crawl.run_crawl(
+                    settings, bus, source_keys=body.sources, cancelled=job.cancel_requested.is_set
+                )
+                result: dict[str, Any] = {"crawl": stats.to_dict()}
+                if body.then_match and not job.cancel_requested.is_set():
+                    try:
+                        result["match"] = run_matching(
+                            settings,
+                            client_for(settings),
+                            bus,
+                            cancelled=job.cancel_requested.is_set,
+                        )
+                    except ProfileMissing as exc:
+                        bus.warn(str(exc), stage="score")
+                        result["match"] = {"skipped": str(exc)}
+            finally:
+                usage.set_recorder(None)
+
+            spent = recorder.to_dict()
+            # Scoring happens after the crawl row is closed, so its cost is
+            # attached to the run rather than written with the rest of the stats.
+            run_id = store.latest_run_id()
+            if run_id is not None:
+                store.add_run_tokens(run_id, spent)
+            result["tokens"] = spent
             result["counts"] = store.counts()
             return result
 
@@ -691,12 +892,23 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - one router, read top
             settings.matching.rescore_existing = True
 
         def work(bus: EventBus, job: Job) -> dict[str, Any]:
+            recorder = usage.UsageRecorder()
+            usage.set_recorder(recorder)
             try:
                 outcome = run_matching(
                     settings, client_for(settings), bus, cancelled=job.cancel_requested.is_set
                 )
             except ProfileMissing as exc:
                 raise RuntimeError(str(exc)) from exc
+            finally:
+                usage.set_recorder(None)
+            spent = recorder.to_dict()
+            # A re-score is spending against whatever search produced those
+            # postings, so it is added to that run rather than lost.
+            run_id = store.latest_run_id()
+            if run_id is not None:
+                store.add_run_tokens(run_id, spent)
+            outcome["tokens"] = spent
             outcome["counts"] = store.counts()
             return outcome
 
@@ -788,7 +1000,32 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - one router, read top
 
     @app.get("/api/applications")
     def get_applications() -> dict[str, Any]:
-        return {"applications": store.list_applications()}
+        return {"applications": store.list_applications(), "statuses": list(APPLICATION_STATUSES)}
+
+    @app.delete("/api/jobs/{job_id}/application")
+    def delete_job_application(job_id: int) -> dict[str, Any]:
+        """Stop tracking a job. The posting stays in your matches."""
+        if not store.delete_application(job_id):
+            raise HTTPException(404, "That job is not being tracked.")
+        return {"applications": store.list_applications(), "counts": store.counts()}
+
+    # --- starting over -----------------------------------------------------
+    @app.post("/api/matches/reset")
+    def post_matches_reset(body: schemas.ResetRequest) -> dict[str, Any]:
+        """Clear scores, and optionally the postings behind them.
+
+        Anything you are tracking is protected unless you say otherwise, because
+        deleting a posting takes its application with it.
+        """
+        removed_scores = store.clear_scores()
+        postings = {"removed": 0, "kept": 0}
+        if body.postings:
+            postings = store.clear_postings(keep_tracked=body.keep_tracked)
+        return {
+            "scores_cleared": removed_scores,
+            "postings": postings,
+            "counts": store.counts(),
+        }
 
     # --- tailoring ---------------------------------------------------------
     @app.post("/api/jobs/{job_id}/tailor")
