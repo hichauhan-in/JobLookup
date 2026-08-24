@@ -30,6 +30,16 @@ let statusBar = null;
 let output = null;
 /** Set once a request has actually reached the model, i.e. consent was given. */
 let consented = false;
+/** Rewrites the handshake if anything removes it while we are still serving. */
+let watchdog = null;
+/** Tries again when another window holds the port, so closing it hands over. */
+let retry = null;
+/** Set during activation; stepping aside needs the retry loop that lives there. */
+let handOver = async () => {};
+
+const DEFAULT_PORT = 8771;
+const WATCHDOG_MS = 10_000;
+const RETRY_MS = 30_000;
 
 function log(message) {
   const stamp = new Date().toISOString().slice(11, 19);
@@ -277,16 +287,36 @@ async function handleHealth(response) {
 }
 
 // --- server lifecycle --------------------------------------------------------
+//
+// Every VS Code window loads this extension, but only one can hold the port, so
+// exactly one window hosts the bridge and the rest stand down. The handshake
+// file names its owner precisely so a window that is not hosting can never take
+// the working bridge away from one that is.
+
+function readHandshake() {
+  try {
+    return JSON.parse(fs.readFileSync(HANDSHAKE_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** Is that process still there? Signal 0 tests for existence without signalling. */
+function isAlive(pid) {
+  if (!pid || typeof pid !== "number") return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means it exists and belongs to somebody else, which still counts.
+    return error.code === "EPERM";
+  }
+}
+
 function writeHandshake(port) {
   fs.mkdirSync(HANDSHAKE_DIR, { recursive: true });
-  const payload = {
-    base_url: `http://127.0.0.1:${port}`,
-    token,
-    pid: process.pid,
-    started_at: new Date().toISOString(),
-  };
   // 0o600: readable only by this user, so another account cannot spend the seat.
-  fs.writeFileSync(HANDSHAKE_FILE, JSON.stringify(payload, null, 2), { mode: 0o600 });
+  fs.writeFileSync(HANDSHAKE_FILE, handshakeFor(port), { mode: 0o600 });
   try {
     fs.chmodSync(HANDSHAKE_FILE, 0o600);
   } catch {
@@ -295,7 +325,70 @@ function writeHandshake(port) {
   log(`Handshake written to ${HANDSHAKE_FILE}`);
 }
 
+function handshakeFor(port) {
+  return JSON.stringify(
+    {
+      base_url: `http://127.0.0.1:${port}`,
+      token,
+      pid: process.pid,
+      started_at: new Date().toISOString(),
+    },
+    null,
+    2
+  );
+}
+
+/**
+ * Become the host, or discover that somebody else already is.
+ *
+ * Holding the usual port is normally proof enough, but a window that fell back
+ * to a free port has no such proof. Creating the file exclusively settles it:
+ * whoever wins the create hosts, and the loser stands down instead of the two
+ * of them overwriting each other.
+ */
+function claimHandshake(port) {
+  fs.mkdirSync(HANDSHAKE_DIR, { recursive: true });
+  try {
+    fs.writeFileSync(HANDSHAKE_FILE, handshakeFor(port), { flag: "wx", mode: 0o600 });
+    log(`Claimed the bridge at 127.0.0.1:${port}`);
+    return true;
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    const existing = readHandshake();
+    if (existing && existing.pid !== process.pid && isAlive(existing.pid)) return false;
+    // Left behind by a window that is gone, so it is ours to take.
+    writeHandshake(port);
+    return true;
+  }
+}
+
+/** Put the handshake back if anything removed it while we were still serving. */
+function ensureHandshake() {
+  const port = server?.address()?.port;
+  if (!port) return;
+  const existing = readHandshake();
+  if (existing && existing.pid === process.pid && existing.token === token) return;
+  if (existing && existing.pid !== process.pid && isAlive(existing.pid)) {
+    // Another window took over. Two servers rewriting one file would flap, so
+    // the right move is to stop rather than to win.
+    log(`Superseded by pid ${existing.pid}. Standing down.`);
+    void handOver();
+    return;
+  }
+  log("Handshake was missing or belonged to nobody. Rewriting it.");
+  writeHandshake(port);
+}
+
 function removeHandshake() {
+  const existing = readHandshake();
+  // Only the window that wrote this file may delete it. Closing or reloading
+  // any other window used to remove it and silently kill the working bridge.
+  // A file naming a process that has gone is stale, and keeping it would point
+  // JobLookup at a bridge that is not there.
+  if (existing && existing.pid !== process.pid && isAlive(existing.pid)) {
+    log(`Leaving the handshake alone; it belongs to pid ${existing.pid}.`);
+    return;
+  }
   try {
     fs.unlinkSync(HANDSHAKE_FILE);
   } catch {
@@ -303,11 +396,9 @@ function removeHandshake() {
   }
 }
 
-function startServer() {
+function listenOn(port) {
   return new Promise((resolve, reject) => {
-    token = crypto.randomBytes(32).toString("hex");
-
-    server = http.createServer(async (request, response) => {
+    const candidate = http.createServer(async (request, response) => {
       if (fromBrowser(request)) {
         send(response, 403, { error: "Browser-originated requests are not accepted." });
         return;
@@ -327,40 +418,116 @@ function startServer() {
       }
     });
 
-    server.on("error", (error) => {
-      log(`Server error: ${error.message}`);
+    candidate.on("error", (error) => {
+      log(`Server error on port ${port}: ${error.message}`);
       reject(error);
     });
 
-    const port = Number(config().get("port") ?? 8771);
-    server.listen(port, "127.0.0.1", () => {
-      const actual = server.address().port;
-      writeHandshake(actual);
-      log(`Listening on http://127.0.0.1:${actual}`);
-      resolve(actual);
+    candidate.listen(port, "127.0.0.1", () => {
+      server = candidate;
+      resolve(candidate.address().port);
     });
   });
 }
 
-function stopServer() {
-  removeHandshake();
-  if (server) {
-    server.close();
+function standby(reason) {
+  const error = new Error(reason);
+  error.code = "STANDBY";
+  return error;
+}
+
+async function startServer() {
+  token = crypto.randomBytes(32).toString("hex");
+  const configured = Number(config().get("port") ?? DEFAULT_PORT);
+
+  let port;
+  try {
+    port = await listenOn(configured);
+  } catch (error) {
+    if (error.code !== "EADDRINUSE") throw error;
+
+    const owner = readHandshake();
+    if (owner && owner.pid !== process.pid && isAlive(owner.pid)) {
+      throw standby(`Another window is hosting the bridge at ${owner.base_url}.`);
+    }
+
+    // Something that is not our bridge has the usual port. JobLookup reads the
+    // port out of the handshake, so any free one works just as well.
+    log(`Port ${configured} is taken by something else. Taking a free port instead.`);
+    port = await listenOn(0);
+  }
+
+  if (!claimHandshake(port)) {
+    await closeServer();
+    throw standby("Another window claimed the bridge first.");
+  }
+
+  log(`Listening on http://127.0.0.1:${port}`);
+  return port;
+}
+
+function closeServer() {
+  return new Promise((resolve) => {
+    const dying = server;
     server = null;
+    if (!dying) return resolve();
+    // JobLookup polls /health on a keep-alive connection, so close() alone waits
+    // for a socket that will not go away on its own and never completes.
+    dying.closeAllConnections?.();
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    dying.close(finish);
+    setTimeout(finish, 2000).unref?.();
+  });
+}
+
+async function stopServer() {
+  clearTimers();
+  // Safe to call unconditionally: removeHandshake refuses to touch a file that
+  // names another process, and a file naming us is ours to clear either way.
+  removeHandshake();
+  await closeServer();
+}
+
+function clearTimers() {
+  if (watchdog) {
+    clearInterval(watchdog);
+    watchdog = null;
+  }
+  if (retry) {
+    clearInterval(retry);
+    retry = null;
   }
 }
 
 function updateStatus() {
   if (!statusBar) return;
   const port = server?.address()?.port;
-  if (!port) {
-    statusBar.text = "$(circle-slash) JobLookup";
-    statusBar.tooltip = "JobLookup Bridge is stopped.";
-    statusBar.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
-  } else {
+  if (port) {
     statusBar.text = "$(broadcast) JobLookup";
     statusBar.tooltip = `JobLookup Bridge is listening on 127.0.0.1:${port}`;
     statusBar.backgroundColor = undefined;
+    statusBar.show();
+    return;
+  }
+
+  const owner = readHandshake();
+  if (owner && isAlive(owner.pid)) {
+    // Not a problem to flag: another window is serving and JobLookup can reach
+    // it, so a warning colour here would be telling the user to fix nothing.
+    statusBar.text = "$(broadcast) JobLookup";
+    statusBar.tooltip =
+      `Another VS Code window is hosting the JobLookup Bridge at ${owner.base_url}. ` +
+      "Keep that window open while JobLookup is scoring.";
+    statusBar.backgroundColor = undefined;
+  } else {
+    statusBar.text = "$(circle-slash) JobLookup";
+    statusBar.tooltip = "JobLookup Bridge is stopped.";
+    statusBar.backgroundColor = new vscode.ThemeColor("statusBarItem.warningBackground");
   }
   statusBar.show();
 }
@@ -370,21 +537,45 @@ async function activate(context) {
   output = vscode.window.createOutputChannel("JobLookup Bridge");
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBar.command = "joblookupBridge.status";
-  context.subscriptions.push(output, statusBar, { dispose: stopServer });
+  context.subscriptions.push(output, statusBar, { dispose: () => void stopServer() });
 
   const start = async () => {
     try {
       const port = await startServer();
+      clearTimers();
+      // Something outside this extension can delete the handshake: an older
+      // build in another window, a cleanup script, the user. Serving without it
+      // is the same as not serving at all, since it is how JobLookup finds us.
+      watchdog = setInterval(ensureHandshake, WATCHDOG_MS);
       updateStatus();
       return port;
     } catch (error) {
       updateStatus();
+      if (error.code === "STANDBY") {
+        // Every window loads this extension and only one can host. That is the
+        // normal case, not a fault, so it gets a log line rather than a dialog.
+        // Keep checking so closing that window hands over to this one.
+        log(`${error.message} Standing down.`);
+        if (!retry) retry = setInterval(() => void start(), RETRY_MS);
+        return null;
+      }
+      clearTimers();
       vscode.window.showErrorMessage(
-        `JobLookup Bridge could not start: ${error.message}. Change joblookupBridge.port ` +
-          "in settings, or set it to 0 to pick a free port."
-      );
+        `JobLookup Bridge could not start: ${error.message}`,
+        "Show log"
+      ).then((choice) => {
+        if (choice === "Show log") output.show();
+      });
       return null;
     }
+  };
+
+  //: Give up hosting without giving up: another window has it, so wait for it.
+  handOver = async () => {
+    await closeServer();
+    clearTimers();
+    updateStatus();
+    if (!retry) retry = setInterval(() => void start(), RETRY_MS);
   };
 
   context.subscriptions.push(
@@ -418,22 +609,38 @@ async function activate(context) {
     vscode.commands.registerCommand("joblookupBridge.status", async () => {
       const models = await listModels();
       const port = server?.address()?.port;
-      const choice = await vscode.window.showInformationMessage(
-        port
-          ? `JobLookup Bridge is listening on 127.0.0.1:${port}. ` +
-              `${models.length} Copilot model(s) available.`
-          : "JobLookup Bridge is not running.",
-        "Show log",
-        "Restart"
-      );
+      const owner = readHandshake();
+      let message;
+      if (port) {
+        message =
+          `JobLookup Bridge is listening on 127.0.0.1:${port}. ` +
+          `${models.length} Copilot model(s) available.`;
+      } else if (owner && isAlive(owner.pid)) {
+        message =
+          `Another VS Code window is hosting the bridge at ${owner.base_url}. ` +
+          "JobLookup can reach it, so there is nothing to do here.";
+      } else {
+        message = "JobLookup Bridge is not running.";
+      }
+      const choice = await vscode.window.showInformationMessage(message, "Show log", "Restart");
       if (choice === "Show log") output.show();
       if (choice === "Restart") vscode.commands.executeCommand("joblookupBridge.restart");
     }),
 
     vscode.commands.registerCommand("joblookupBridge.restart", async () => {
-      stopServer();
-      await start();
-      vscode.window.showInformationMessage("JobLookup Bridge restarted.");
+      const owner = readHandshake();
+      if (!server?.listening && owner && isAlive(owner.pid) && owner.pid !== process.pid) {
+        vscode.window.showWarningMessage(
+          `The bridge is hosted by another VS Code window (pid ${owner.pid}). ` +
+            "Restart it from that window, or close it and this one will take over."
+        );
+        return;
+      }
+      // Awaited, because the port is not free the instant close() is called and
+      // rebinding too early is exactly how this ends up reporting EADDRINUSE.
+      await stopServer();
+      const port = await start();
+      if (port) vscode.window.showInformationMessage(`JobLookup Bridge restarted on ${port}.`);
     })
   );
 
@@ -441,8 +648,8 @@ async function activate(context) {
   else updateStatus();
 }
 
-function deactivate() {
-  stopServer();
+async function deactivate() {
+  await stopServer();
 }
 
 module.exports = { activate, deactivate };

@@ -13,6 +13,7 @@ quietly spend your Copilot quota.
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,16 @@ SETUP_HINT = (
 
 EXTENSION_ID = "joblookup.joblookup-bridge"
 HANDSHAKE_NAME = "bridge.json"
+
+#: Where the extension listens unless the user moved it. Only used to tell
+#: "never started" apart from "started, but we cannot see its handshake".
+DEFAULT_PORT = 8771
+
+
+def _something_is_listening(port: int = DEFAULT_PORT) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.15)
+        return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
 def extension_state(handshake_file: str | None = None) -> dict[str, object]:
@@ -86,6 +97,18 @@ class VSCodeBridgeProvider:
 
         path = self._handshake_path()
         if not path.is_file():
+            #: Something on the bridge's port with no handshake usually means an
+            #: older build is still resident in a VS Code window. Its token only
+            #: exists in that window's memory, so a reload fixes it and a
+            #: reinstall does not.
+            if _something_is_listening():
+                raise LLMUnavailableError(
+                    f"Something is listening on 127.0.0.1:{DEFAULT_PORT} but no handshake "
+                    f"was written to {path}, so JobLookup cannot authenticate to it. If that "
+                    "is the bridge, reload the VS Code window running it: press Ctrl+Shift+P "
+                    "and run 'Developer: Reload Window'. Otherwise pick another model in "
+                    "Settings."
+                )
             raise LLMUnavailableError(
                 f"The VS Code bridge is not running (no handshake file at {path}). {SETUP_HINT}"
             )

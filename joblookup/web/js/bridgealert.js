@@ -55,7 +55,7 @@ function evaluate(state) {
       onDismiss: snooze,
       title: "The JobLookup bridge is not installed in VS Code",
       body: "Run .\\scripts\\install-bridge.ps1 from the JobLookup folder, then reload VS Code.",
-      actions: [{ label: "How to fix", run: () => (location.hash = "#/settings") }],
+      actions: [otherModel],
     });
     return;
   }
@@ -66,7 +66,7 @@ function evaluate(state) {
       onDismiss: snooze,
       title: "VS Code has not loaded the bridge yet",
       body: "Switch to VS Code, press Ctrl+Shift+P and run 'Developer: Reload Window'. Keep that window open while JobLookup is scoring.",
-      actions: [],
+      actions: [otherModel],
     });
     return;
   }
@@ -76,9 +76,17 @@ function evaluate(state) {
     onDismiss: snooze,
     title: "The bridge is running but Copilot has not been authorised",
     body: "In VS Code, press Ctrl+Shift+P and run 'JobLookup Bridge: Authorise Copilot Access'. Accept the permission dialog when it appears.",
-    actions: [],
+    actions: [otherModel],
   });
 }
+
+//: Every one of these banners is a reason the bridge cannot be used, and the
+//: bridge is not the only way to get a model. Saying so beats leaving the user
+//: with an instruction they may not be able to follow.
+const otherModel = {
+  label: "Use another model",
+  run: () => (location.hash = "#/settings"),
+};
 
 /**
  * Stop nagging for a while.

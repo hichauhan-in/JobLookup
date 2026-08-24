@@ -2,7 +2,7 @@
   "name": "joblookup-bridge",
   "displayName": "JobLookup Bridge",
   "description": "Lets the local JobLookup app use your GitHub Copilot seat through VS Code's Language Model API.",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "publisher": "joblookup",
   "private": true,
   "license": "MIT",
@@ -38,7 +38,7 @@
           "default": 8771,
           "minimum": 0,
           "maximum": 65535,
-          "description": "Port the bridge listens on (127.0.0.1 only). Use 0 to pick a free port automatically."
+          "description": "Preferred port (127.0.0.1 only). If it is taken by something other than the bridge, a free port is used automatically. Use 0 to always pick a free one."
         },
         "joblookupBridge.modelFamily": {
           "type": "string",
