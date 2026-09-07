@@ -18,7 +18,15 @@ EMPLOYMENT_TYPES = ("full-time", "part-time", "contract", "internship", "tempora
 SENIORITY_LADDER = ("intern", "junior", "mid", "senior", "lead", "principal", "director")
 
 BANDS = ("strong", "good", "stretch", "rejected")
-APPLICATION_STATUSES = ("saved", "applied", "interviewing", "offer", "rejected")
+APPLICATION_STATUSES = (
+    "saved",
+    "considering",
+    "applied",
+    "interviewing",
+    "offer",
+    "rejected",
+    "withdrawn",
+)
 
 
 def seniority_rank(value: str | None) -> int:

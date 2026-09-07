@@ -7,6 +7,9 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
+node_modules/
+test-results/
+playwright-report/
 
 # Your data. Never committed, never packaged, never shared.
 workspace/

@@ -10,7 +10,6 @@ uses the GitHub Copilot seat you already have and never asks for a paid key.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
@@ -22,6 +21,7 @@ from joblookup.llm.base import (
     LLMUnavailableError,
     ProviderStatus,
 )
+from joblookup.services.secrets import llm_key
 
 API_VERSION = "2023-06-01"
 SETUP_HINT = (
@@ -38,7 +38,7 @@ class AnthropicProvider:
         self.config = config
 
     def _api_key(self) -> str:
-        return os.environ.get(self.config.api_key_env, "").strip()
+        return llm_key(self.config.api_key_env, self.config.base_url)
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -68,6 +68,14 @@ class AnthropicProvider:
                 f"Could not reach {base}: {exc}",
                 setup_hint=SETUP_HINT,
                 needs_paid_key=True,
+            )
+        if response.status_code in (401, 403):
+            return ProviderStatus(
+                self.key,
+                self.label,
+                False,
+                "Anthropic rejected the API key.",
+                setup_hint="Update your API key in Settings and test again.",
             )
         if response.status_code >= 400:
             return ProviderStatus(

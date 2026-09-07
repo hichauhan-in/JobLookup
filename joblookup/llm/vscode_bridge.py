@@ -16,6 +16,7 @@ import json
 import socket
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -72,7 +73,7 @@ def extension_state(handshake_file: str | None = None) -> dict[str, object]:
     return {
         "extension_installed": bool(installed),
         "extension_version": installed[0] if installed else "",
-        "handshake_present": path.is_file(),
+        "handshake_present": path.is_file() or bool(list((path.parent / "bridges").glob("*.json"))),
         "handshake_path": str(path),
     }
 
@@ -83,6 +84,7 @@ class VSCodeBridgeProvider:
 
     def __init__(self, config: VSCodeLLMConfig) -> None:
         self.config = config
+        self._health_payload: dict[str, Any] | None = None
 
     # --- handshake ---------------------------------------------------------
     def _handshake_path(self) -> Path:
@@ -90,38 +92,70 @@ class VSCodeBridgeProvider:
             return Path(self.config.handshake_file).expanduser()
         return user_state_dir() / HANDSHAKE_NAME
 
-    def _endpoint(self) -> tuple[str, str]:
-        """Return ``(base_url, token)``, preferring explicit config."""
-        if self.config.base_url:
-            return self.config.base_url.rstrip("/"), self.config.token or ""
-
-        path = self._handshake_path()
-        if not path.is_file():
-            #: Something on the bridge's port with no handshake usually means an
-            #: older build is still resident in a VS Code window. Its token only
-            #: exists in that window's memory, so a reload fixes it and a
-            #: reinstall does not.
-            if _something_is_listening():
-                raise LLMUnavailableError(
-                    f"Something is listening on 127.0.0.1:{DEFAULT_PORT} but no handshake "
-                    f"was written to {path}, so JobLookup cannot authenticate to it. If that "
-                    "is the bridge, reload the VS Code window running it: press Ctrl+Shift+P "
-                    "and run 'Developer: Reload Window'. Otherwise pick another model in "
-                    "Settings."
-                )
-            raise LLMUnavailableError(
-                f"The VS Code bridge is not running (no handshake file at {path}). {SETUP_HINT}"
-            )
+    @staticmethod
+    def _validated_endpoint(base_url: str, token: str) -> tuple[str, str]:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise LLMUnavailableError(f"Bridge handshake file is unreadable: {exc}") from exc
+            address = urlsplit(base_url)
+            valid = (
+                address.scheme == "http"
+                and address.hostname in {"127.0.0.1", "localhost", "::1"}
+                and address.port is not None
+                and address.port > 0
+                and not (address.username or address.password or address.query or address.fragment)
+                and address.path in {"", "/"}
+                and len(token) >= 16
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise LLMUnavailableError(
+                "The bridge discovery file has an invalid local endpoint or token."
+            )
+        return base_url.rstrip("/"), token
 
-        base_url = str(data.get("base_url") or "").rstrip("/")
-        token = str(data.get("token") or "")
-        if not base_url:
-            raise LLMUnavailableError("Bridge handshake file does not contain a base_url.")
-        return base_url, token
+    def _endpoint(self) -> tuple[str, str]:
+        self._health_payload = None
+        if self.config.base_url:
+            return self._validated_endpoint(self.config.base_url, self.config.token or "")
+        legacy = self._handshake_path()
+        candidates = [legacy]
+        if not self.config.handshake_file:
+            discovered = list((legacy.parent / "bridges").glob("*.json"))
+            candidates = (
+                sorted(discovered, key=lambda path: path.name, reverse=True)[:16] + candidates
+            )
+        fallback = None
+        for path in candidates:
+            try:
+                if path.stat().st_size > 8192:
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
+                base, token = self._validated_endpoint(
+                    str(data.get("base_url") or ""), str(data.get("token") or "")
+                )
+                response = httpx.get(
+                    f"{base}/health", headers=self._headers(token), timeout=0.8, trust_env=False
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict) or not payload.get("ok"):
+                    continue
+                if payload.get("copilot_available") and payload.get("consented"):
+                    self._health_payload = payload
+                    return base, token
+                if fallback is None:
+                    fallback = (base, token, payload)
+            except (OSError, ValueError, httpx.HTTPError, LLMUnavailableError):
+                continue
+        if fallback:
+            base, token, self._health_payload = fallback
+            return base, token
+        raise LLMUnavailableError(
+            "No reachable VS Code bridge was found. Run 'JobLookup Bridge: Restart Server' "
+            "in an open VS Code window, then authorize Copilot access. Local matching still works."
+        )
 
     def _headers(self, token: str) -> dict[str, str]:
         headers = {"content-type": "application/json"}
@@ -137,9 +171,14 @@ class VSCodeBridgeProvider:
             return ProviderStatus(self.key, self.label, False, str(exc), setup_hint=SETUP_HINT)
 
         try:
-            response = httpx.get(f"{base_url}/health", headers=self._headers(token), timeout=5.0)
-            response.raise_for_status()
-            payload: dict[str, Any] = response.json()
+            if self._health_payload is not None:
+                payload = self._health_payload
+            else:
+                response = httpx.get(
+                    f"{base_url}/health", headers=self._headers(token), timeout=3.0, trust_env=False
+                )
+                response.raise_for_status()
+                payload = response.json()
         except Exception as exc:  # noqa: BLE001
             return ProviderStatus(
                 self.key,
@@ -208,16 +247,17 @@ class VSCodeBridgeProvider:
                 headers=self._headers(token),
                 json=body,
                 timeout=httpx.Timeout(15.0, read=self.config.request_timeout_s),
+                trust_env=False,
             )
         except httpx.RequestError as exc:
             raise LLMUnavailableError(
                 f"Lost contact with the VS Code bridge: {exc}. Is the VS Code window still open?"
             ) from exc
 
-        if response.status_code == 401:
+        if response.status_code in (401, 403):
             raise LLMUnavailableError(
-                "The bridge rejected the token. Reload the VS Code window so a fresh "
-                "handshake file is written, then try again."
+                "Bridge access was denied. Restart the bridge and run 'JobLookup Bridge: "
+                "Authorise Copilot Access' in VS Code. Your local matches are unaffected."
             )
         if response.status_code >= 400:
             raise LLMError(f"Bridge error {response.status_code}: {response.text[:400]}")

@@ -68,8 +68,8 @@ if ($Uninstall) {
 # Already current: leave it alone so a normal start stays fast and silent.
 $installed = Get-ChildItem $extensionsDir -Directory -Filter "$extensionId-*" -ErrorAction SilentlyContinue
 if ($installed.Name -contains (Split-Path $target -Leaf)) {
-    $stamp = Join-Path $target 'extension.js'
-    $sourceStamp = Join-Path $source 'extension.js'
+    $stamp = Join-Path $target $manifest.main
+    $sourceStamp = Join-Path $source $manifest.main
     if ((Test-Path $stamp) -and
         (Get-Item $stamp).LastWriteTimeUtc -ge (Get-Item $sourceStamp).LastWriteTimeUtc) {
         Say "  Copilot bridge $($manifest.version) is already installed." DarkGray

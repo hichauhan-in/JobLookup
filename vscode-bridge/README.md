@@ -33,54 +33,36 @@ To remove it: `.\scripts\install-bridge.ps1 -Uninstall`.
 | Control | Why |
 | --- | --- |
 | Binds `127.0.0.1` only | Never reachable from the network |
-| Per-session bearer token in `~/.joblookup/bridge.json`, mode 0600 | Another process cannot quietly spend your Copilot quota |
+| Per-session token in `~/.joblookup/bridges/<instance>.json`, mode 0600 | Requests must authenticate; Windows uses the user-profile ACL |
 | Constant-time token comparison | The token cannot be guessed a byte at a time |
 | Rejects any request carrying `Origin` or `Sec-Fetch-Site` | Blocks a malicious web page attempting DNS rebinding |
-| 8 MB request body cap | Bounded memory |
+| 2 MB request and output caps, two concurrent requests | Bounded memory and model load |
 
 The token is regenerated every time the extension starts, so the handshake file
 is only valid while that VS Code window is open.
 
 ## When the port is busy
 
-Two different situations look the same from the outside, so the extension tells
-them apart:
-
-* **Another VS Code window is hosting.** Normal, and nothing to fix. This window
-  logs a line, stands down, and retries every 30 seconds so that closing the
-  hosting window hands over rather than leaving you with nothing.
-* **Something that is not the bridge has the port.** The extension takes a free
-  port instead and records it in the handshake. JobLookup reads the port out of
-  that file, so it does not have to be the usual one and no setting needs
-  changing.
-
-Only the window that wins an exclusive create of the handshake hosts, so two
-windows can never both believe they are serving.
-
-Neither case raises a dialog. An error dialog now means something the extension
-genuinely cannot work around, and it comes with a **Show log** button.
+The preferred port is 8771. If it is occupied, this window uses an available
+port and publishes it in its own discovery file. JobLookup reads that file,
+authenticates to the endpoint, and does not need a fixed port. A port conflict
+does not require closing another application.
 
 ## Several VS Code windows
 
-Every open window loads this extension, but only one can hold the port. The
-first to bind hosts the bridge and writes the handshake; the rest log a line and
-stand down, retrying every 30 seconds so that closing the hosting window hands
-over rather than leaving you with nothing.
+Each window hosts an independent endpoint and owns only its own discovery file.
+Closing or reloading one window cannot remove another window's credentials.
+Discovery files are published atomically and refreshed every 15 seconds.
+The Python client skips malformed and unreachable records and prefers a window
+with available models and confirmed consent. Legacy discovery remains readable
+for compatibility.
 
-The handshake records the process that wrote it, and only that process may
-delete it. Without that rule, closing or reloading any other window removes the
-handshake belonging to the window that is actually serving, and JobLookup stops
-being able to authenticate even though the bridge is still running. The host
-also re-checks the file every 10 seconds and puts it back if anything removed
-it, so the system recovers on its own.
+Restarts are serialized, await server shutdown, and close active connections.
+Consent is checked through VS Code's model-access API; visible models alone do
+not count as authorization. Explicitly requested models never silently fall
+back to another model.
 
-The status bar shows `$(broadcast) JobLookup` both when this window is hosting
-and when another one is, because in both cases there is nothing to fix. Hover it
-to see which.
-
-If JobLookup reports that a bridge is listening but has not written its
-handshake, an older build is still resident in a window. Reload that window:
-<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> → **Developer: Reload Window**.
+After updating the extension, reload VS Code once so the new code is activated.
 
 ## Settings
 

@@ -47,6 +47,8 @@ KIND_LANE: dict[str, str] = {
     "match": "model",
     "cv-extract": "model",
     "tailor": "model",
+    "review": "model",
+    "connection-test": "model",
     "sign-in": "interactive",
     "test-selectors": "interactive",
     "provision": "search",

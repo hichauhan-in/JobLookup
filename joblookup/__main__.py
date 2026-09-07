@@ -96,6 +96,7 @@ def doctor_command(args: argparse.Namespace) -> int:
 
 def install_bridge(args: argparse.Namespace) -> int:
     """Copy the VS Code extension into place without needing PowerShell."""
+    import json
     import shutil
 
     from joblookup.llm.vscode_bridge import EXTENSION_ID
@@ -108,17 +109,20 @@ def install_bridge(args: argparse.Namespace) -> int:
 
     from pathlib import Path
 
+    manifest = json.loads((source / "package.json").read_text(encoding="utf-8"))
     installed = 0
     for root in (".vscode", ".vscode-insiders"):
         extensions = Path.home() / root / "extensions"
         if not extensions.is_dir():
             continue
-        target = extensions / f"{EXTENSION_ID}-0.1.0"
+        target = extensions / f"{EXTENSION_ID}-{manifest['version']}"
         if args.uninstall:
             shutil.rmtree(target, ignore_errors=True)
             print(f"Removed {target}")
         else:
-            shutil.rmtree(target, ignore_errors=True)
+            for previous in extensions.glob(f"{EXTENSION_ID}-*"):
+                if previous.is_dir():
+                    shutil.rmtree(previous)
             shutil.copytree(source, target)
             print(f"Installed to {target}")
         installed += 1

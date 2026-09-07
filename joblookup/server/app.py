@@ -283,6 +283,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     _register_routes(app)
 
+    from joblookup.server.connections import build_router as connection_router
+    from joblookup.server.portals import build_router as portal_router
+    from joblookup.server.workbench import build_router
+
+    app.include_router(build_router(current_settings))
+    app.include_router(connection_router(current_settings, reload_settings))
+    app.include_router(portal_router(current_settings, reload_settings))
+
     web = web_dir()
     if web.is_dir():
         app.mount("/", RevalidatingStatics(directory=str(web), html=True), name="web")
@@ -750,11 +758,27 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - one router, read top
                 "Browser sign-in is disabled in hosted mode: it would open a window on "
                 "the server, not on your machine.",
             )
+        if not settings.tier_b.enabled or not registry.source_config(key).get("risk_ack"):
+            raise HTTPException(
+                400, "Enable portal access and acknowledge the restrictions before signing in."
+            )
+        try:
+            tier_b_browser.require_playwright()
+        except tier_b_browser.PlaywrightMissing as exc:
+            raise HTTPException(400, str(exc)) from exc
 
         def work(bus: EventBus, job: Job) -> dict[str, Any]:
             bus.stage_start("signin", f"Opening {adapter.name}")
-            bus.log("Sign in as you normally would, then close the browser window.")
-            result = tier_b_browser.sign_in(settings, adapter.key, adapter.login_url)
+            bus.log("Sign in on the portal's own page. The window closes after verification.")
+            result = tier_b_browser.sign_in(
+                settings,
+                adapter.key,
+                adapter.login_url,
+                authenticated=adapter.authenticated,
+                cancelled=job.cancel_requested.is_set,
+            )
+            if not result["session_saved"] and not job.cancel_requested.is_set():
+                raise RuntimeError(result["detail"])
             bus.stage_end(
                 "signin", "Session saved" if result["session_saved"] else "No session was saved"
             )
@@ -762,7 +786,11 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - one router, read top
 
         return {
             "task": manager.submit(
-                "sign-in", work, label=f"Sign in to {adapter.name}", meta={"source": key}
+                "sign-in",
+                work,
+                label=f"Sign in to {adapter.name}",
+                meta={"source": key},
+                single=False,
             ).summary()
         }
 
@@ -772,6 +800,10 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - one router, read top
         if not isinstance(adapter, PortalAdapter):
             raise HTTPException(400, "Selector testing only applies to logged-in portals.")
         settings = current_settings()
+        context = registry.context_for(key, settings)
+        ready, reason = adapter.is_configured(context)
+        if not ready:
+            raise HTTPException(400, reason)
         titles, locations = crawl.profile_queries(settings)
 
         def work(bus: EventBus, job: Job) -> dict[str, Any]:
@@ -783,7 +815,18 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - one router, read top
                 locations=locations,
                 log=lambda message: bus.log(message, stage="test"),
             )
-            report = adapter.test_selectors(context)
+            with tier_b_browser.session_access(settings, key):
+                tier_b_browser.check_daily_cap(settings, key)
+                tier_b_browser.record_run(key)
+                if context.config.get("access_mode", "session") == "public":
+                    jobs = adapter.fetch_public(context)
+                    report = {
+                        "portal": key,
+                        "access": "public",
+                        "selectors": {"card": {"matched": len(jobs)}},
+                    }
+                else:
+                    report = adapter.test_selectors(context)
             matched = report.get("selectors", {}).get("card", {}).get("matched", 0)
             bus.stage_end("test", f"{matched} card(s) matched")
             return report
@@ -812,8 +855,10 @@ def _register_routes(app: FastAPI) -> None:  # noqa: C901 - one router, read top
                 ),
             )
             for index, (label, command) in enumerate(steps, start=1):
+                if job.cancel_requested.is_set():
+                    return {"cancelled": True}
                 bus.stage_start("install", label)
-                result = subprocess.run(command, capture_output=True, text=True)
+                result = subprocess.run(command, capture_output=True, text=True, timeout=600)
                 if result.returncode != 0:
                     raise RuntimeError(f"{label} failed: {(result.stderr or result.stdout)[-600:]}")
                 bus.progress("install", index / len(steps), label)
@@ -1189,7 +1234,7 @@ def _submit_extract(cv_id: int) -> Job:
     settings = current_settings()
 
     def work(bus: EventBus, job: Job) -> dict[str, Any]:
-        return profiling.extract_cv(cv_id, client_for(settings), settings, bus)
+        return profiling.extract_cv_locally(cv_id, settings, bus)
 
     return manager.submit("cv-extract", work, meta={"cv_id": cv_id}, single=False)
 

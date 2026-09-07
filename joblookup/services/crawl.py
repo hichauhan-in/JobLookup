@@ -61,8 +61,10 @@ def fetch_one(
 
     try:
         jobs = adapter.fetch(context)
-    except (TierBDisabled, TierBBlocked, PlaywrightMissing) as exc:
+    except TierBDisabled as exc:
         return SourceResult(adapter.key, status="skipped", detail=str(exc))
+    except (TierBBlocked, PlaywrightMissing) as exc:
+        return SourceResult(adapter.key, status="failed", error=str(exc))
     except SourceError as exc:
         return SourceResult(adapter.key, status="failed", error=str(exc))
     except Exception as exc:  # noqa: BLE001

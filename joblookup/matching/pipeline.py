@@ -1,16 +1,4 @@
-"""The matching run, end to end.
-
-Three stages, each cheaper than the one after it:
-
-    everything stored  →  recall  →  prefilter  →  the model  →  bands
-
-The shape is the whole cost story. Recall touches an index, not the model.
-Prefilter applies rules the user already stated, for free. Only what survives
-both reaches a Copilot call, and even then a dozen postings share one call.
-
-Every threshold in here is a setting, because the right trade-off between
-coverage and quota is a personal one.
-"""
+"""Local matching is always available; AI review is a separate, explicit action."""
 
 from __future__ import annotations
 
@@ -19,14 +7,10 @@ from typing import Any
 
 from joblookup import store
 from joblookup.config import Settings
-from joblookup.cv.profile import profile_text
 from joblookup.events import EventBus
 from joblookup.llm import LLMClient
-from joblookup.llm import budget as llm_budget
-from joblookup.llm.base import LLMUnavailableError
-from joblookup.matching.prefilter import prefilter
-from joblookup.matching.recall import recall
-from joblookup.matching.rerank import score_jobs
+from joblookup.matching.evidence import ENGINE_VERSION, evaluate_job
+from joblookup.models import Score
 
 Cancelled = Callable[[], bool]
 
@@ -37,123 +21,51 @@ class ProfileMissing(RuntimeError):
 
 def run_matching(
     settings: Settings,
-    client: LLMClient,
+    client: LLMClient | None,
     bus: EventBus,
     *,
     cancelled: Cancelled = lambda: False,
 ) -> dict[str, Any]:
-    # Auto mode decides the model and how much detail to send before anything is
-    # spent, so every stage below runs on the settings the dial actually chose.
-    settings, budget = llm_budget.effective(settings, client.status().models)
-    if budget is not None:
-        bus.log(
-            f"Auto: {budget.label} - {budget.model or 'default model'}, "
-            f"{budget.description_chars} characters per posting, "
-            f"batches of {budget.score_batch_size}.",
-            stage="score",
-        )
-
     profile_row = store.get_profile()
     profile = profile_row.get("data") or {}
     version = int(profile_row.get("version") or 1)
-
-    if not profile.get("skills") and not profile.get("target_titles"):
-        raise ProfileMissing(
-            "There is no profile to match against yet. Upload a CV, or fill in the "
-            "target titles on the Profile screen."
-        )
-
-    summary_text = profile_text(profile)
-
-    # --- stage 1: recall ---------------------------------------------------
-    bus.stage_start("recall", "Finding candidates")
-    ranked, mode = recall(summary_text, client, settings, bus)
-    how = "vector similarity" if mode == "vector" else "keyword match"
-    bus.stage_end(
-        "recall",
-        f"{len(ranked)} candidate(s) by {how}",
-        count=len(ranked),
-        mode=mode,
-    )
-    if not ranked:
-        return {
-            "scored": 0,
-            "recalled": 0,
-            "considered": 0,
-            "mode": mode,
-            "dropped": {},
-            "message": "Nothing matched your profile closely enough. Run a search first, "
-            "or widen matching.recall_min_score in Settings.",
-        }
-
-    scores_by_id = dict(ranked)
-    candidates = store.jobs_for_scoring(
-        job_ids=[job_id for job_id, _ in ranked],
-        profile_version_value=version,
-        rescore=settings.matching.rescore_existing,
-    )
-    for job in candidates:
-        job["recall_score"] = scores_by_id.get(int(job["id"]), 0.0)
-
-    if not candidates:
-        return {
-            "scored": 0,
-            "recalled": len(ranked),
-            "considered": 0,
-            "mode": mode,
-            "dropped": {},
-            "message": "Everything relevant has already been scored against this profile. "
-            "Turn on matching.rescore_existing to judge them again.",
-        }
-
-    # --- stage 2: prefilter ------------------------------------------------
-    bus.stage_start("prefilter", "Applying your own rules")
-    kept, dropped = prefilter(candidates, profile, settings)
-    bus.stage_end(
-        "prefilter",
-        f"{len(kept)} to judge, {sum(dropped.values())} ruled out for free",
-        kept=len(kept),
-        dropped=dropped,
-    )
-    if not kept:
-        return {
-            "scored": 0,
-            "recalled": len(ranked),
-            "considered": 0,
-            "mode": mode,
-            "dropped": dropped,
-            "message": "Everything was ruled out by your own filters. Relax the work "
-            "mode, seniority or exclusion settings on the Profile screen.",
-        }
-
-    # --- stage 3: the model ------------------------------------------------
-    batches = -(-len(kept) // max(1, settings.matching.score_batch_size))
-    bus.stage_start("score", f"Judging {len(kept)} posting(s) in {batches} model call(s)")
-    try:
-        scores = score_jobs(
-            profile, kept, client, settings, bus, version, cancelled=cancelled, budget=budget
-        )
-    except LLMUnavailableError as exc:
-        bus.warn(str(exc), stage="score")
-        raise
-
-    store.save_scores(scores)
+    if not profile.get("target_titles"):
+        raise ProfileMissing("Add at least one target role in your profile before matching.")
+    candidates = [job for job in store.match_candidates() if not job["hidden"]]
+    bus.stage_start("score", f"Checking {len(candidates)} postings against your profile")
+    scores = []
     bands: dict[str, int] = {}
-    for score in scores:
-        bands[score.band] = bands.get(score.band, 0) + 1
-    bus.stage_end(
-        "score",
-        ", ".join(f"{count} {band}" for band, count in sorted(bands.items())) or "nothing scored",
-        **bands,
-    )
-
+    for index, job in enumerate(candidates):
+        if cancelled():
+            break
+        fit = evaluate_job(job, profile, recency_days=settings.search.recency_days)
+        bands[fit["band"]] = bands.get(fit["band"], 0) + 1
+        scores.append(
+            Score(
+                job_id=job["id"],
+                profile_version=version,
+                composite=fit["score"] / 100,
+                band={"review": "stretch", "excluded": "rejected"}.get(fit["band"], fit["band"]),
+                rationale=fit["summary"],
+                matched_skills=[entry["skill"] for entry in fit["matched_skills"]],
+                blocker=" ".join(fit["blockers"]) or None,
+                model=ENGINE_VERSION,
+            )
+        )
+        if index % 50 == 0:
+            bus.progress(
+                "score", index / max(1, len(candidates)), f"{index}/{len(candidates)} checked"
+            )
+    if store.profile_version() == version:
+        store.save_scores(scores)
+    bus.stage_end("score", f"{len(scores)} postings checked locally", **bands)
     return {
         "scored": len(scores),
-        "recalled": len(ranked),
-        "considered": len(kept),
-        "mode": mode,
-        "dropped": dropped,
+        "recalled": len(candidates),
+        "considered": len(candidates),
+        "mode": "local",
+        "dropped": {"ineligible": bands.get("excluded", 0)},
         "bands": bands,
-        "model_calls": batches,
-        "budget": budget.to_dict() if budget else None,
+        "model_calls": 0,
+        "budget": None,
     }

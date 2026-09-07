@@ -14,6 +14,7 @@ be readable, diffable and occasionally shared.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -119,6 +120,15 @@ def set(name: str, value: str) -> None:  # noqa: A001 - the verb is the point
 
 def clear(name: str) -> None:
     set(name, "")
+
+
+def llm_secret_name(environment: str, base_url: str) -> str:
+    scope = f"{environment}:{base_url.rstrip('/')}"
+    return "llm_" + hashlib.sha256(scope.encode()).hexdigest()[:24]
+
+
+def llm_key(environment: str, base_url: str) -> str:
+    return os.environ.get(environment, "").strip() or get(llm_secret_name(environment, base_url))
 
 
 def status() -> dict[str, Any]:

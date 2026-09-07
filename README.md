@@ -1,19 +1,20 @@
 # JobLookup
 
-**Find the jobs worth applying for, using the AI you already have.**
+**A local-first job-search workspace with explainable matches and optional AI.**
 
-Upload your CVs. JobLookup builds one career profile from them, searches real job
-sources, collapses the same role found on five sites into one card, and ranks
-what is left against you — with the reasoning shown, and a plain-English split
-between gaps you could close in a week and gaps that need years.
+Create a profile or upload a resume, choose your target roles and locations,
+then search public feeds and employer boards. Matches show the role alignment,
+skill evidence, eligibility conflicts, and missing information separately.
 
-It runs entirely on your machine and uses **the GitHub Copilot seat you already
-have**, through VS Code's Language Model API. No GPU. No paid API key. Nothing
-installed system-wide. Run one script and a browser tab opens.
+Search and ranking work without an AI connection. Connect GitHub Copilot through
+VS Code or its CLI, a local model, Anthropic, or an OpenAI-compatible API for
+explicit resume analysis, job reviews, and tailoring. There is no automatic
+fallback to a different provider.
 
-The ranking is deliberately **stretch-tolerant**. Most people are hired into
-roles they have not held before, so a support engineer looking at SRE work should
-see those roles, not have them filtered out for a missing keyword.
+The React/TypeScript interface has three primary views: **Matches**,
+**Applications**, and **Your profile**. Connections, sources, and history live
+under **Settings**. The compiled frontend is included, so normal use requires
+only the Python launcher, not Node.js.
 
 ---
 
@@ -63,9 +64,8 @@ The first run takes a minute or two. When it finishes you will see:
   Press Ctrl+C to stop.
 ```
 
-To stop it later, press **Close JobLookup** at the bottom of the sidebar, which
-shuts the server down properly. Closing the browser tab on its own leaves it
-running in the background.
+To stop it later, press **Ctrl+C** in its terminal. Closing the browser tab does
+not stop the local server.
 
 **One manual step, and only if VS Code was already open** when you first ran it:
 VS Code will not have noticed the new bridge extension. Press
@@ -78,8 +78,8 @@ once VS Code has reloaded.
 
 ### Confirm it is healthy
 
-The indicator at the top-left of the sidebar names the model in use. From a
-terminal:
+The top bar shows whether the local workspace is reachable. Test an AI provider
+from **Settings > AI connection > Save & test**. From a terminal:
 
 ```powershell
 .\.venv\Scripts\python.exe -m joblookup doctor
@@ -91,9 +91,10 @@ Every failing check prints the exact command that fixes it.
 
 ## Connect a model (once)
 
-JobLookup needs a language model to read your CV and to judge postings. **The
-recommended option uses the GitHub Copilot seat you already have, and the
-launcher has already installed the bridge for you.**
+AI is optional. Local document extraction and evidence-based ranking work
+without it. Configure a provider under **Settings > AI connection** to enable
+AI resume analysis, job reviews, and tailored drafts. API keys entered there are
+stored separately from configuration and scoped to their endpoint.
 
 > A Copilot subscription is licensed for use *through* approved clients, not as a
 > general-purpose API key. JobLookup does not invent a way around that. It uses
@@ -188,103 +189,56 @@ your data stays in your tenant and the usage is auditable.
 
 ### 1. Add your CVs
 
-**Profile → Upload.** Every version you have, not just the latest. Each one is a
-partial view of you; merged, they give a fuller picture, and a skill that appears
-in most of them is treated as core rather than incidental. Each file also stays
-available as a base for tailoring.
-
-Reading a CV takes a few seconds and happens in the background.
+Open **Your profile > Documents > Choose files**. PDF, DOCX, TXT, and Markdown
+documents are read locally. Review the extracted skills and correct or add
+anything missing. The local extractor recognizes a finite skill vocabulary; it
+does not infer every skill or parse scanned images. The document's AI action
+requests a richer analysis from your selected provider, explicitly.
 
 ### 2. Say what you are looking for
 
-Target titles, locations, work modes, your level, work authorisation, and
-anything you never want to see. These are the answers only you can give, and
-they are never overwritten by anything read from a document.
-
-If you are not sure what to put in Target titles, press **Suggest roles for me**.
-It reads your CV and proposes titles that actually appear in job adverts, split
-into what you are ready for now and what would be a step up, each with the reason
-it was suggested. Click one to add it. Without a model configured it still works,
-falling back to the titles you have held and the obvious steps up from them.
+Add target roles, preferred locations, working arrangements, employment types,
+experience, and exclusions. Save the profile. Manual edits survive subsequent
+document extraction. Portfolio links are retained as profile information; the
+app does not crawl those links automatically.
 
 ### 3. Choose your sources
 
-The Sources screen has four sections, and the first one does the work.
+Open **Settings > Job sources**. Choose a region and **Use recommended**, or
+configure individual public feeds, employer boards, and keyed APIs. Employer
+boards take company names; Workday takes the careers-page URL. The source
+configuration dialog contains the relevant fields and credential links.
 
-**Start at "Where are you looking?".** Pick your country, or **Remote
-(anywhere)**, choose how many companies you want watched, and press **Set up
-everything**. In one action it:
-
-- switches on the sources worth your time in that country
-- fills in that country's settings, such as the right Adzuna country codes
-- gives every company board in the pack a list of employers, ranked against your
-  CV and that country, from a catalogue checked against the live APIs
-- tells you exactly what it did, and what still needs a free key or a login
-
-It then shows the full list of companies it chose, grouped by board, so the
-choice can actually be reviewed rather than taken on trust. Everything it
-configured appears in the sections below, tagged **from pack**, with the
-companies listed inline. Edit any of it and it becomes yours: the tag goes, and
-**Undo this pack** will leave your version alone while taking back the rest.
-
-Nothing that needs a login is ever switched on for you.
-
-**Prefer to do it yourself?** Turn **Use guided setup** off. The country card
-collapses to that one switch, no country settings are applied, and the three
-sections below become the whole story.
-
-Picking **Remote (anywhere)** also changes what you get back: any posting not
-positively identified as a remote role is dropped before it is scored. There is
-also an **Only show remote roles** switch beside the country, so "India, but
-only roles I can do from home" is a combination you can ask for directly.
-
-**The sections below** are the same sources in full. Every source carries a **?**
-that opens step-by-step instructions written for that specific site — where to
-get its key, or where to find the company name.
-
-Workday is the exception among boards: it is the one most large employers use,
-and it is addressed by pasting the whole careers page address rather than a short
-name.
-
-The keyless public feeds are already on and need nothing.
+Ready, enabled sources participate in searches, including optional portals
+after you enable portal access and acknowledge each portal's restrictions.
+The employer catalogue provides starting suggestions, not a guarantee that a
+source remains available.
 
 ### 4. Run a search
 
-**Dashboard → Run search.** Progress streams live. Sources are fetched in
-parallel, results are normalised and deduplicated, and then matching runs.
-
-The search card carries the two dials worth reaching for mid-search, so a small
-change does not mean a trip to Settings:
-
-- **How far back to look** — 24 hours through to a month.
-- **How deep to search** — a slider from Glance to Exhaustive. It sets how many
-  postings reach the model, and each stop tells you the rough cost in model
-  calls, which is the number that decides whether a search is worth it.
-- **Remote only**, and **Keep these**. Leave the last one off and your choices
-  apply to that one search; turn it on and they become your defaults.
-
-Every search is recorded under **History**, along with the postings it produced.
-You can reopen any run's results, delete a single run, or clear the lot. Deleting
-history never deletes postings, scores or applications — it only forgets that a
-particular search happened.
+Open **Matches**, choose the posting-age window, and press **Find jobs**.
+Public sources are fetched concurrently, normalized, deduplicated, and ranked
+locally. Progress remains visible while you navigate; the task can be stopped.
+Source counts and failures are recorded under **Settings > Search history**.
 
 ### 5. Read the matches
 
-**Matches** shows your most recent search by default, because that is almost
-always what you want to look at. The selector next to the age filter switches to
-any earlier search, or to **Everything collected** to look across all of them.
+**Recommended** contains relevant postings with sufficient local evidence and
+no detected preference conflicts. **Needs review** separates missing location,
+date, or skill evidence. **All postings** includes excluded jobs with their
+reasons. Hidden jobs have a separate recoverable view.
 
-Filter by band and age. Open one to see the three fit bars, the reasoning, the
-skills you already have, and the gaps split into "about a week" and "years".
+Open **View match > Fit evidence** for the score components and exact posting
+quotes. Scores measure the published evidence, not the probability of being
+hired. Country/city recognition and explicit requirement parsing are
+conservative, not exhaustive; confirm eligibility with the employer.
 
 ### 6. Tailor and track
 
-On a posting you like, **Tailor for this job** rewrites your CV for it using only
-what your CV already contains, then strips the wording that makes writing read as
-machine generated. You get a `.docx`, a Markdown copy, and an interview prep
-sheet carrying everything you could not honestly claim.
-
-Set a status on the posting and it appears under **Applications**.
+The detail drawer has optional **AI review** and **Resume** tabs. Tailoring uses
+the selected base document and produces a draft and interview-preparation notes.
+Review generated material before using it. Save a job to track it under
+**Applications**.
 
 The **Applications** screen is where you move things along. Each row has its own
 status picker, so marking something applied or rejected takes one click and never
@@ -293,16 +247,10 @@ a tracked role leaves the posting itself in your matches.
 
 ### Starting over
 
-**Matches → Start over** clears what has been judged. There are two levels:
-
-* **Scores only** (the default) throws away the model's verdicts and keeps the
-  postings, so **Score again** re-judges them without another search. This is
-  what you want after changing your CV or your target titles.
-* **Postings too** empties the stored postings as well, for a genuinely clean
-  slate. Anything under **Applications** is kept unless you say otherwise,
-  because deleting a posting would take the application with it.
-
-Neither touches your CVs, your profile, your sources or your search history.
+Use **Clear stored matches** in the Matches toolbar to remove untracked
+postings. Tracked applications, resumes, profile, sources, and history are
+preserved. Application tracking can be cleared separately without deleting
+postings. Both operations require confirmation.
 
 ---
 
@@ -313,7 +261,8 @@ Neither touches your CVs, your profile, your sources or your search history.
 Startup takes a couple of seconds — the setup steps only run when something is
 missing. Nothing to reinstall, nothing to reauthorise.
 
-**If you use the VS Code bridge**, have a VS Code window open before scoring.
+**If you use the VS Code bridge**, keep an authorized VS Code window open for
+AI actions. Search and local ranking do not require it.
 
 To stop it, press <kbd>Ctrl</kbd>+<kbd>C</kbd> in the terminal, or close it.
 Everything you have collected lives in `workspace\` and stays there between runs.
@@ -497,81 +446,80 @@ Keys go into Windows Credential Manager where it is available and into an
 owner-only file otherwise. Never into a config file, and never anywhere except
 the API they belong to.
 
-### Portals that need a login — off by default
+### Job portals - optional access
 
 LinkedIn, Indeed, Naukri, Glassdoor, Wellfound, Dice, Instahyre, Cutshort,
 Foundit.
 
-> **Read this before enabling any of them.** These portals prohibit automated
-> access in their terms of service. Using them can get your account restricted or
-> permanently banned, and in some jurisdictions carries further legal exposure.
-> The design minimises the risk but cannot remove it.
->
-> JobLookup never sees or stores your password: you sign in yourself in a visible
-> browser window, once, and the session cookie stays in a local profile directory.
-> There is no CAPTCHA solving and no 2FA circumvention. Requests are paced with
-> randomised human-scale delays, page counts are bounded, and there is a daily run
-> cap plus a global kill switch.
->
-> Every portal is off until you enable it *and* explicitly acknowledge the risk,
-> and Playwright is not even downloaded until you ask for it. Start with the
-> public APIs and the company boards; they will likely give you more good
-> postings than scraping ever will.
+Under **Settings > Job sources**, choose **Job portals** or scroll to the portal
+section. Three paths are available:
 
-Portal selectors live in `joblookup/sources/tier_b/portals/*.yaml`. When a portal
-changes its layout, press **Test selectors**: it opens a real browser and reports
-how many nodes each selector matched, so you fix a YAML file rather than Python.
+1. **Sign in:** enable Portal access, accept the per-portal restrictions, and
+  select **Save & sign in**. Install browser support when prompted. Enter your
+  credentials and any verification only on the portal's own browser page, not
+  in JobLookup. The window closes after an authenticated page or session signal
+  is detected. A profile directory alone never counts as a successful login.
+2. **Try without sign-in:** supported connectors can request ordinary public
+  listing pages without stored login cookies. This is best effort, not an
+  official API or a bypass. At most one listing page and three public detail
+  pages are read per run. Full descriptions are used when publicly available;
+  incomplete details remain subject to review.
+3. **Import job:** paste the posting URL, title, company, and description from
+  a job you can access. This requires no automation, browser support, or saved
+  account. Unknown dates remain unknown. The posting enters normal matching
+  and application tracking with its original portal source.
+
+**Sign-in does not authorize automated access.** LinkedIn and other portals may
+restrict automation and can block requests or restrict accounts. Use these
+connectors only where your use is permitted. There is no CAPTCHA solving, login
+circumvention, account creation, or stealth-browser configuration.
+
+Portal sessions are local to `workspace/browser_profiles`. **Disconnect** deletes
+the portal's local browser state and disables it without deleting stored jobs.
+Status can expire and selectors can change. **Check access** reports readable
+cards or an actionable error; an access block is not reported as an empty result.
+
+Public LinkedIn listings and three full descriptions were readable in a local
+smoke test; Indeed returned HTTP 403 and was not retried. This does not guarantee
+availability for other sessions, locations, or dates. Signed-in behavior cannot
+be verified without the user's own interactive login.
 
 ---
 
 ## How the matching works
 
-Three stages, each cheaper than the one after it. The shape is the whole cost
-story.
+The current pipeline is deterministic and local:
 
-```
-everything stored  →  recall  →  prefilter  →  the model  →  bands
-   (thousands)        (~300)      (~120)       (~10 calls)
+```text
+public sources -> normalization and deduplication -> eligibility and evidence -> views
 ```
 
-**1 · Recall — free, no model.** SQLite's full-text index, ranked by BM25 with
-the title weighted far above the body. If the selected provider happens to offer
-embeddings (a local Ollama server, or an OpenAI-style endpoint you configured),
-cosine similarity is used instead because it is better. Copilot has no embeddings
-API, so with the default setup this stays lexical — and that is fine, not a
-degraded mode.
+The workspace evaluates stored postings against the current profile, not stale
+AI scores. It checks role-title overlap, explicit skill mentions, recognized
+country/city restrictions, working arrangement, employment type, seniority,
+explicit experience requirements, exclusions, and posting age.
 
-**2 · Prefilter — free, no model.** Applies the rules *you* stated: work mode,
-seniority range, exclusions, recency, and the remote-only rule if you picked the
-Remote pack. A model call that concludes "this Berlin-only role is not for you,
-you said remote in the UK" is a call that never needed to happen. Nothing
-requiring judgement happens here.
-
-**3 · The model — batched.** A dozen postings are judged in one call. The reply
-is keyed by the posting id, never by position, so a model that drops or reorders
-an entry costs that one score and nothing else; anything missing is retried
-alone. Scores are cached against the profile version, so re-running does not
-re-spend.
-
-Set `matching.score_batch_size` to `1` for maximum accuracy at roughly twelve
-times the cost, or raise `matching.prefilter_keep` for wider coverage. Every
-number in that diagram is a setting.
+Exact profile and posting content key a bounded assessment cache. Profile or
+posting edits invalidate the result immediately; freshness is rechecked at
+minute granularity. Unknown fields remain explicit rather than being inferred
+as favorable facts. An AI review is separate from these rules and cannot
+override a detected eligibility conflict.
 
 ### Scoring
 
-Three dimensions, not one:
+| Evidence | Maximum points |
+| --- | --- |
+| Target-role alignment | 45 |
+| Explicit skill coverage | 30 |
+| Location eligibility | 10 |
+| Seniority alignment | 10 |
+| Published date within the selected window | 5 |
 
-| Dimension | Question | Weight |
-| --- | --- | --- |
-| Direct fit | Have you already done this exact work? | 0.45 |
-| Transferable fit | Do your existing skills carry over? | 0.40 |
-| Growth fit | Is this a realistic next step? | 0.15 |
-
-Transferable is weighted heavily on purpose. The composite becomes a band —
-**Strong**, **Good**, **Stretch** — with a plain-English reason and gaps split
-into "about a week" and "years". A genuine hard stop (visa, clearance, a legally
-mandatory licence) sets a blocker and rules the posting out regardless of score.
-An unfamiliar technology is not a blocker.
+A known preference conflict excludes the posting regardless of points. Missing
+location, date, description, or skill evidence routes it to **Needs review**.
+The score is an inspectable heuristic, not a calibrated hiring probability.
+Skill and geography dictionaries are deliberately conservative and are not
+exhaustive. Legal eligibility and unstated requirements still need human review.
 
 ### Deduplication
 
@@ -597,60 +545,11 @@ across a seniority, discipline or location difference.
 
 ## What a search costs
 
-Almost everything the model is asked to do is scoring: judging a shortlist of
-postings against your profile. Measured on a real search, one scoring call at
-the shipped defaults breaks down like this:
-
-| Part | Share of the call |
-| --- | --- |
-| The job descriptions themselves | about 90% |
-| The model's written answers | about 20% of the total, counting output |
-| The scoring instructions, sent once per call | about 7% |
-| Your profile, repeated on every call | about 2% |
-
-So four things decide the bill, and only one of them is the model:
-
-1. **How many postings reach the model.** Linear. This is the **how deep to
-   search** slider on the Dashboard, because it is a coverage decision.
-2. **How much of each description is sent.** The biggest lever here: 600
-   characters against 6000 is a threefold difference in the whole search.
-3. **How much the model writes back.** Roughly a fifth of the total.
-4. **Which model answers.** This barely changes the token count and changes the
-   cost enormously, because a premium model bills at a multiple of a small one.
-
-### The spending dial
-
-**Settings → Model spending** owns items 2, 3 and 4 from one slider, and is on
-**auto** by default. Dragging it re-estimates the cost live and shows what it
-picked and why:
-
-| Position | Model | Per posting | Batch | Answer length | A 300-posting search |
-| --- | --- | --- | --- | --- | --- |
-| Bare minimum | smallest available | 600 chars | 24 | 12 words | about 93k tokens |
-| Frugal | small and fast | 1,100 chars | 18 | 18 words | about 136k tokens |
-| Balanced (default) | small and fast | 1,800 chars | 12 | 28 words | about 198k tokens |
-| Thorough | balanced | 3,200 chars | 8 | 38 words | about 316k tokens |
-| No compromise | most capable | 6,000 chars | 5 | 50 words | about 546k tokens |
-
-Auto deliberately never touches how many postings are scored. Two dials that
-both quietly reduce coverage would be impossible to reason about, so coverage
-stays on the Dashboard and cost-per-posting stays here.
-
-Turning **auto** off hands the model and reasoning settings straight back to
-you: whatever you set on the Language model card is used exactly as written, and
-the dial is disabled.
-
-### Where the numbers come from
-
-None of the providers this app can use reports token usage reliably, so every
-figure shown is an **estimate**, at about four characters per token, and is
-labelled as one wherever it appears. It is accurate enough for the decision it
-exists to inform: on a measured run of 145 postings the estimate was within a
-fraction of a percent of the recorded total. For exact billing, read your
-provider's own dashboard.
-
-**History** records what each search cost, and totals it across searches. A
-search that never called the model shows "none" rather than a zero.
+Searching and local ranking make **zero model calls**. Public sources can still
+have their own API quotas. Optional AI analysis, reviews, connection tests, and
+tailoring consume your selected provider's quota. Exact billing belongs in that
+provider's dashboard. The former automatic spending dial is not part of the
+rebuilt workflow.
 
 ## Settings
 
@@ -667,31 +566,11 @@ $env:JOBLOOKUP_SEARCH_RECENCY_DAYS = "14"
 $env:JOBLOOKUP_MATCHING_SCORE_BATCH_SIZE = "4"
 ```
 
-The Settings screen exposes every number the app uses to make a judgement. Each
-one is its own row with a plain-English explanation of what changing it does.
-
-It opens on **Basic**, which is the ten or so settings people actually change.
-**Advanced** is the same controls with nothing left out, grouped by what they
-affect. Nothing is hidden from you in Basic; it is a shorter list, not a
-different one. The **Language model** card sits above both tabs, since it is the
-one setting everything else depends on, and clicking the model name in the
-sidebar takes you straight to it.
-
-| Group | Covers |
-| --- | --- |
-| Model spending | Auto on or off, and the one dial that sets model, detail and answer length |
-| Language model | Provider, model, reasoning effort, context window, request timeout |
-| Searching | Recency window, per-source caps, pacing, timeouts, archiving |
-| How many model calls to spend | Recall depth, prefilter, batch size, description length, concurrency, retries |
-| What counts as a good match | The three fit weights and the three band thresholds |
-| Duplicate detection | Title and description similarity, whether location must match |
-| CV tailoring | Enrichment level, bullets per role, style guard, upskilling section, output format |
-| Logged-in portals | Action delays, pages per run, daily cap, navigation timeout, headless |
-| Vector recall | Whether to use embeddings, which model, batch size, timeout, recall mode |
-| Scheduled searches | On/off, hour, minute |
-
-The defaults are meant to be good enough that you never open that screen. It is
-there because "good enough by default" is not the same as "right for you".
+Settings now has four focused sections: **AI connection**, **Job sources**,
+**Search history**, and **Workspace**. Profile preferences are edited in Your
+profile. Low-level source pacing, timeouts, and compatibility settings remain
+in configuration rather than being presented as dozens of everyday controls.
+Legacy model-scoring weights do not control the new local evidence engine.
 
 ---
 
@@ -700,15 +579,16 @@ there because "good enough by default" is not the same as "right for you".
 | Destination | What reaches it |
 | --- | --- |
 | Job sources | An ordinary HTTP request. Keyed APIs also receive your target titles and locations as the search query. |
-| Your language model | Your merged profile summary and the job descriptions being scored. When tailoring, also the text of the CV you selected. |
+| Your language model | Only on an explicit AI action: relevant profile/job text, or the selected resume for analysis and tailoring. |
 | Anywhere else | Nothing. |
 
 With the VS Code bridge, "your language model" means GitHub Copilot through VS
 Code, on the same terms as any other Copilot request. With Ollama it means
 nothing leaves the machine at all.
 
-Your CVs, the postings, the scores and your application history live in
-`workspace\` and are never uploaded anywhere.
+Your documents, postings, and application history are stored in `workspace\`.
+They are not sent to an AI provider during ordinary search or local ranking.
+Explicit AI actions send the necessary text to the provider you selected.
 
 ### What reaches JobLookup
 
@@ -728,9 +608,10 @@ request:
 
 Outbound requests are checked too. Sources are third parties and a third party
 can answer with a redirect, so each hop is re-checked rather than followed
-blindly, and anything resolving to loopback, a private range or a link-local
-address is refused. That is what stops an enabled feed being used to read this
-machine.
+blindly. Literal loopback, private, and link-local destinations are refused,
+and authentication headers are removed on cross-host redirects. This is not a
+network sandbox or a guarantee against DNS rebinding; run the tool locally and
+use trusted source configurations.
 
 ---
 
@@ -825,14 +706,21 @@ Tests cover normalisation, deduplication behaviour, the style guard, config
 layering, scoring weights and banding, the prefilter, the storage layer and JSON
 recovery from a chatty model. None of them touch the network or a real model.
 
-The web UI has no build step: edit a file under `joblookup/web/` and reload the
-browser. Static files are served with `no-cache`, so a reload always picks up
-your change rather than a stale copy.
+Frontend source lives under `frontend/src`. Its production build replaces
+`joblookup/web` and is served by FastAPI with hashed assets. Normal end users do
+not need Node.js; frontend development does.
 
-Layout is built from a small set of primitives in `joblookup/web/js/dom.js` —
-`card`, `accordion`, `settingRow`, `rows`/`splitRows`, `toggle`, `chipToggle`.
-Use those rather than a one-off flex container, so a new screen inherits the
-same spacing as every other one.
+```powershell
+npm --prefix frontend ci
+npm --prefix frontend run build
+npm --prefix frontend run lint
+npm --prefix frontend exec -- playwright install chromium
+npm --prefix frontend run test:e2e
+node --test vscode-bridge/test/bridge.test.cjs
+```
+
+Browser tests use a temporary database, not the saved workspace. Bridge tests
+use temporary discovery directories and stub only the VS Code model API.
 
 ---
 

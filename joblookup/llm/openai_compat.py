@@ -11,7 +11,6 @@ or shared. Local runtimes need no key at all and are not asked for one.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 from urllib.parse import urlparse
 
@@ -24,6 +23,7 @@ from joblookup.llm.base import (
     LLMUnavailableError,
     ProviderStatus,
 )
+from joblookup.services.secrets import llm_key
 
 SETUP_HINT = (
     "Pick a preset on the Settings screen, or set llm.openai_compat.base_url in "
@@ -54,7 +54,7 @@ class OpenAICompatProvider:
 
     # --- auth --------------------------------------------------------------
     def _api_key(self) -> str:
-        return os.environ.get(self.config.api_key_env, "").strip()
+        return llm_key(self.config.api_key_env, self._base())
 
     def _needs_key(self) -> bool:
         return not is_local(self.config.base_url)
@@ -92,6 +92,14 @@ class OpenAICompatProvider:
 
         try:
             response = httpx.get(f"{base}/models", headers=self._headers(), timeout=8.0)
+            if response.status_code in (401, 403):
+                return ProviderStatus(
+                    self.key,
+                    self.label,
+                    False,
+                    "The endpoint rejected the API key.",
+                    setup_hint="Update your API key in Settings and test again.",
+                )
             if response.status_code >= 400:
                 # Plenty of gateways expose /chat/completions but not /models;
                 # that is not a failure worth reporting as "unavailable".

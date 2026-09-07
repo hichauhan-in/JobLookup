@@ -101,3 +101,25 @@ class TestPrefilter:
         new = job(id=2, posted_at=parse_date("1 hour ago"))
         kept, _ = prefilter([old, new], {}, settings)
         assert [entry["id"] for entry in kept] == [2, 1]
+
+    def test_remote_does_not_mean_available_in_every_country(self):
+        settings = Settings()
+        profile = {"locations": ["India"], "work_modes": ["remote"]}
+        kept, dropped = prefilter(
+            [job(location="Remote, United States only", country="US")], profile, settings
+        )
+        assert kept == []
+        assert dropped["location"] == 1
+
+    def test_worldwide_remote_is_available_in_the_target_country(self):
+        settings = Settings()
+        kept, _ = prefilter(
+            [job(location="Worldwide", country="", work_mode="remote")],
+            {"locations": ["India"]},
+            settings,
+        )
+        assert len(kept) == 1
+
+    def test_short_exclusions_do_not_match_inside_other_words(self):
+        kept, _ = prefilter([job()], {"exclusions": ["IT"]}, Settings())
+        assert len(kept) == 1

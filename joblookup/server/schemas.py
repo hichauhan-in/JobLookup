@@ -95,6 +95,9 @@ class ProfilePatch(BaseModel):
     full_name: str | None = None
     email: str | None = None
     phone: str | None = None
+    skills: list[dict[str, Any]] | None = Field(default=None, max_length=100)
+    total_years_experience: float | None = Field(default=None, ge=0, le=70)
+    links: list[str] | None = Field(default=None, max_length=10)
 
 
 class SearchRequest(BaseModel):

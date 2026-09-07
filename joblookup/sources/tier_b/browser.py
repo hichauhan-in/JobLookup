@@ -16,16 +16,23 @@ There is no CAPTCHA solving and no 2FA circumvention, and there will not be.
 
 from __future__ import annotations
 
+import json
 import random
+import re
 import threading
 import time
-from datetime import date
+from collections.abc import Callable
+from contextlib import contextmanager
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from joblookup.config import Settings
 from joblookup.db import session as db
 from joblookup.paths import ensure_dir
+
+_profile_locks: dict[str, threading.Lock] = {}
+_profile_locks_guard = threading.Lock()
 
 
 class TierBDisabled(RuntimeError):
@@ -44,20 +51,59 @@ def profiles_root(settings: Settings) -> Path:
     return ensure_dir(settings.paths.workspace_dir / "browser_profiles")
 
 
+def _profile_path(settings: Settings, portal_key: str) -> Path:
+    if not re.fullmatch(r"[a-z0-9_-]+", portal_key):
+        raise ValueError("Invalid portal identifier.")
+    return settings.paths.workspace_dir / "browser_profiles" / portal_key
+
+
 def profile_dir(settings: Settings, portal_key: str) -> Path:
-    return ensure_dir(profiles_root(settings) / portal_key)
+    return ensure_dir(_profile_path(settings, portal_key))
+
+
+@contextmanager
+def session_access(settings: Settings, portal_key: str):
+    key = str(_profile_path(settings, portal_key).resolve())
+    with _profile_locks_guard:
+        lock = _profile_locks.setdefault(key, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise TierBBlocked(f"{portal_key}: another browser operation is using this session.")
+    try:
+        yield
+    finally:
+        lock.release()
 
 
 def has_session(settings: Settings, portal_key: str) -> bool:
-    """A persistent context that has ever been used leaves state behind."""
-    directory = profile_dir(settings, portal_key)
-    return (directory / "Default").is_dir() or any(directory.iterdir())
+    return session_state(settings, portal_key).get("authenticated") is True
+
+
+def session_state(settings: Settings, portal_key: str) -> dict[str, Any]:
+    marker = _profile_path(settings, portal_key) / ".session.json"
+    try:
+        state = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"authenticated": False}
+    return state if isinstance(state, dict) else {"authenticated": False}
+
+
+def record_session(settings: Settings, portal_key: str, *, authenticated: bool) -> None:
+    marker = profile_dir(settings, portal_key) / ".session.json"
+    marker.write_text(
+        json.dumps(
+            {"authenticated": authenticated, "checked_at": datetime.now(timezone.utc).isoformat()}
+        ),
+        encoding="utf-8",
+    )
 
 
 def clear_session(settings: Settings, portal_key: str) -> None:
     import shutil
 
-    shutil.rmtree(profile_dir(settings, portal_key), ignore_errors=True)
+    with session_access(settings, portal_key):
+        directory = _profile_path(settings, portal_key)
+        if directory.exists():
+            shutil.rmtree(directory)
 
 
 # --- availability ------------------------------------------------------------
@@ -132,11 +178,7 @@ def require_playwright() -> Any:
 
 # --- pacing and caps ---------------------------------------------------------
 def human_pause(settings: Settings) -> None:
-    """A randomised delay in the range a person would actually produce.
-
-    A fixed interval is itself a signature. Lowering these bounds is the single
-    fastest way to get an account restricted.
-    """
+    """Pace requests to avoid burdening the portal."""
     low = max(0.5, settings.tier_b.min_action_delay_s)
     high = max(low + 0.5, settings.tier_b.max_action_delay_s)
     time.sleep(random.uniform(low, high))
@@ -179,7 +221,6 @@ def launch_context(settings: Settings, portal_key: str, *, headless: bool | None
             headless=settings.tier_b.headless if headless is None else headless,
             viewport={"width": 1440, "height": 900},
             locale="en-GB",
-            args=["--disable-blink-features=AutomationControlled"],
         )
     except Exception:
         playwright.stop()
@@ -188,25 +229,64 @@ def launch_context(settings: Settings, portal_key: str, *, headless: bool | None
     return playwright, context
 
 
-def sign_in(settings: Settings, portal_key: str, login_url: str) -> dict[str, Any]:
-    """Open a visible window at the portal's own login page and wait.
+def sign_in(
+    settings: Settings,
+    portal_key: str,
+    login_url: str,
+    *,
+    authenticated: Callable[[Any, Any], bool],
+    cancelled: Callable[[], bool] = lambda: False,
+    timeout_s: float = 600,
+) -> dict[str, Any]:
+    """Let the user authenticate directly with the portal, then verify the session."""
+    with session_access(settings, portal_key):
+        playwright, context = launch_context(settings, portal_key, headless=False)
+        confirmed = False
+        stopped = False
+        expired = False
+        closed = False
 
-    Blocking until the window closes is the whole design: the user types the
-    password into the portal's real page, JobLookup never sees it, and the
-    resulting cookie stays in the local profile directory.
-    """
-    playwright, context = launch_context(settings, portal_key, headless=False)
-    try:
-        page = context.pages[0] if context.pages else context.new_page()
-        page.goto(login_url, wait_until="domcontentloaded")
-        # There is no reliable "logged in" signal across nine different portals,
-        # so the honest answer is to let the user close the window when done.
-        page.wait_for_event("close", timeout=0)
-    except Exception:  # noqa: BLE001
-        pass
-    finally:
+        def on_close(*args):
+            nonlocal closed
+            closed = True
+
+        context.on("close", on_close)
         try:
-            context.close()
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto(login_url, wait_until="domcontentloaded")
+            deadline = time.monotonic() + timeout_s
+            while not closed:
+                if cancelled():
+                    stopped = True
+                    break
+                if authenticated(page, context):
+                    confirmed = True
+                    break
+                if time.monotonic() >= deadline:
+                    expired = True
+                    break
+                if page.is_closed():
+                    break
+                page.wait_for_timeout(400)
+        except Exception as exc:
+            if not closed:
+                raise TierBBlocked(
+                    f"{portal_key}: sign-in could not be completed ({type(exc).__name__})."
+                ) from exc
         finally:
-            playwright.stop()
-    return {"portal": portal_key, "session_saved": has_session(settings, portal_key)}
+            try:
+                if not closed:
+                    context.close()
+            finally:
+                playwright.stop()
+                record_session(settings, portal_key, authenticated=confirmed)
+        detail = (
+            "Sign-in verified. The browser session is stored locally."
+            if confirmed
+            else "Sign-in cancelled."
+            if stopped
+            else "Sign-in timed out. Try again when you are ready."
+            if expired
+            else "The browser closed before sign-in could be verified."
+        )
+        return {"portal": portal_key, "session_saved": confirmed, "detail": detail}

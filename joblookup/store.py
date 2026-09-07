@@ -339,6 +339,32 @@ def get_job(job_id: int) -> dict[str, Any]:
     return job
 
 
+def match_candidates() -> list[dict[str, Any]]:
+    rows = (
+        db.connect()
+        .execute(
+            """
+        SELECT job.id, job.title, job.company, job.location, job.country,
+               job.work_mode, job.employment, job.seniority, job.description,
+               job.url, job.apply_url, job.posted_at, job.first_seen_at,
+               job.last_seen_at, job.salary_min, job.salary_max, job.salary_currency,
+               job.hidden, application.status AS application_status,
+               COALESCE(sources.keys, '') AS source_keys
+        FROM job
+        LEFT JOIN application ON application.job_id = job.id
+        LEFT JOIN (
+            SELECT job_id, GROUP_CONCAT(source_key) AS keys
+            FROM job_source GROUP BY job_id
+        ) AS sources ON sources.job_id = job.id
+        WHERE job.archived = 0
+        ORDER BY job.posted_at DESC, job.id DESC
+        """
+        )
+        .fetchall()
+    )
+    return [dict(row) | {"source_keys": (row["source_keys"] or "").split(",")} for row in rows]
+
+
 def _shape_job(row: Any) -> dict[str, Any]:
     job = dict(row)
     job.pop("embedding", None)

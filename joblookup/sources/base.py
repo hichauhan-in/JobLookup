@@ -301,29 +301,37 @@ class SourceAdapter(ABC):
             **(headers or {}),
         }
 
-        #: Walked by hand rather than with follow_redirects, so that every hop
-        #: is checked. httpx would follow a 302 into 127.0.0.1 without asking.
-        for hop in range(MAX_REDIRECTS + 1):
-            check_outbound(url)
-            _limiter.wait(_host_of(url), max(search.min_request_interval_s, self.rate_limit_s))
-            try:
-                response = httpx.request(
-                    method,
-                    url,
-                    params=params,
-                    headers=merged,
-                    json=json_body,
-                    timeout=search.http_timeout_s,
-                    follow_redirects=False,
+        with httpx.Client(timeout=search.http_timeout_s, follow_redirects=False) as client:
+            outgoing = client.build_request(
+                method, url, params=params, headers=merged, json=json_body
+            )
+            for hop in range(MAX_REDIRECTS + 1):
+                target = str(outgoing.url)
+                check_outbound(target)
+                _limiter.wait(
+                    _host_of(target), max(search.min_request_interval_s, self.rate_limit_s)
                 )
-            except httpx.RequestError as exc:
-                raise SourceError(f"Could not reach {_host_of(url)}: {exc}") from exc
-
-            if not response.is_redirect or hop == MAX_REDIRECTS:
-                break
-            url = str(response.next_request.url) if response.next_request else url
-            #: A redirected request is a fresh one, so the body does not follow.
-            params, json_body = None, None
+                try:
+                    response = client.send(outgoing)
+                except httpx.RequestError as exc:
+                    raise SourceError(
+                        f"Could not reach {_host_of(target)} ({type(exc).__name__})."
+                    ) from exc
+                following = response.next_request
+                if following is None:
+                    break
+                if hop == MAX_REDIRECTS:
+                    raise SourceError(f"{self.name} exceeded the redirect limit.")
+                origin = (outgoing.url.scheme, outgoing.url.host, outgoing.url.port)
+                destination = (following.url.scheme, following.url.host, following.url.port)
+                if origin != destination:
+                    if outgoing.method not in {"GET", "HEAD"}:
+                        raise SourceError(
+                            "A source tried to redirect a submitted request to another host."
+                        )
+                    for secret_header in ("authorization", "api-key", "x-api-key", "cookie"):
+                        following.headers.pop(secret_header, None)
+                outgoing = following
 
         if response.status_code == 429:
             raise SourceError(
@@ -331,6 +339,10 @@ class SourceAdapter(ABC):
                 "or run the search less often."
             )
         if response.status_code in (401, 403):
+            if self.tier == "b":
+                raise SourceError(
+                    f"{self.name} blocked portal access (HTTP {response.status_code})."
+                )
             raise SourceError(
                 f"{self.name} refused the request ({response.status_code}). "
                 "Check the API key on the Sources screen."

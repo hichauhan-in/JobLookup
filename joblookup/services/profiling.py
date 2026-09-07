@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from joblookup import store
@@ -10,12 +11,23 @@ from joblookup.cv import extract as cv_extract
 from joblookup.cv import profile as profile_merge
 from joblookup.events import EventBus, NullBus
 from joblookup.llm import LLMClient
+from joblookup.matching.evidence import skills_from_text
 
 #: Keys the user owns. Rebuilding must never clobber them.
 PREFERENCE_KEYS = profile_merge.PREFERENCE_KEYS
 
 #: Keys the user may have hand-corrected after a bad extraction.
-MANUAL_KEYS = ("headline", "summary", "seniority", "full_name", "email", "phone")
+MANUAL_KEYS = (
+    "headline",
+    "summary",
+    "seniority",
+    "full_name",
+    "email",
+    "phone",
+    "skills",
+    "total_years_experience",
+    "links",
+)
 
 
 def preferences() -> dict[str, Any]:
@@ -78,12 +90,15 @@ def extract_cv(
 
     label = record.get("label") or record.get("filename") or f"CV {cv_id}"
     bus.stage_start("extract", f"Reading {label}")
-    store.set_cv_extraction(cv_id, state="running", extracted=None)
+    previous = record.get("extracted") or None
+    store.set_cv_extraction(cv_id, state="running", extracted=previous)
 
     try:
         extracted = cv_extract.extract(client, record.get("raw_text") or "", settings)
     except Exception as exc:  # noqa: BLE001
-        store.set_cv_extraction(cv_id, state="failed", extracted=None, error=str(exc))
+        store.set_cv_extraction(
+            cv_id, state="ok" if previous else "failed", extracted=previous, error=str(exc)
+        )
         raise
 
     store.set_cv_extraction(cv_id, state="ok", extracted=extracted)
@@ -99,6 +114,30 @@ def extract_cv(
         f"{merged.get('source_cv_count', 0)} CV(s)",
     )
     return {"cv_id": cv_id, "extracted": extracted, "profile": merged}
+
+
+def extract_cv_locally(
+    cv_id: int, settings: Settings, bus: EventBus | None = None
+) -> dict[str, Any]:
+    bus = bus or NullBus()
+    record = store.get_cv(cv_id)
+    if not record:
+        raise ValueError("That resume is no longer stored.")
+    text = record.get("raw_text") or ""
+    bus.stage_start("extract", "Extracting skills from the document")
+    email = re.search(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", text)
+    years = re.search(r"(\d+(?:\.\d+)?)\+?\s+years?\s+(?:of\s+)?experience", text, re.I)
+    extracted = {
+        "skills": skills_from_text(text),
+        "email": email.group(0) if email else "",
+        "total_years_experience": float(years.group(1)) if years else 0,
+        "method": "local",
+        "roles": [],
+    }
+    store.set_cv_extraction(cv_id, state="ok", extracted=extracted)
+    merged = rebuild(settings)
+    bus.stage_end("extract", f"{len(extracted['skills'])} skills found; ready for your review")
+    return {"cv_id": cv_id, "extracted": extracted, "profile": merged, "method": "local"}
 
 
 def onboarding_state(settings: Settings) -> dict[str, Any]:

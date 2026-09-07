@@ -1,0 +1,126 @@
+.portal-section {
+  margin-top: 32px;
+  padding-top: 26px;
+  border-top: 1px solid var(--line);
+}
+.portal-master-label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.portal-policy {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-bottom: 20px;
+  color: var(--muted);
+}
+.portal-policy p {
+  font-size: 12px;
+  line-height: 1.75;
+}
+.portal-row {
+  border-top: 1px solid var(--line);
+  padding: 21px 0 17px;
+}
+.portal-row:last-child {
+  border-bottom: 1px solid var(--line);
+}
+.portal-identity {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+.portal-identity > div:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.portal-identity h3 {
+  font-size: 14px;
+}
+.portal-identity p {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
+.portal-identity .portal-status {
+  color: #8a6335;
+}
+.portal-actions {
+  display: flex;
+  gap: 5px 9px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 13px;
+  padding-left: 49px;
+}
+.portal-actions .button {
+  font-size: 11px;
+}
+.portal-task {
+  align-items: center;
+}
+.portal-task > div {
+  flex: 1;
+  min-width: 0;
+}
+.portal-access-description {
+  font-size: 12px;
+  line-height: 1.85;
+  color: var(--muted);
+  margin-bottom: 22px;
+}
+.portal-risk {
+  display: flex;
+  gap: 9px;
+  background: #fcf5e8;
+  border-radius: 6px;
+  color: #815e30;
+  padding: 14px;
+  margin-bottom: 17px;
+}
+.portal-risk p {
+  font-size: 12px;
+  line-height: 1.8;
+}
+.portal-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink);
+}
+.portal-consent input {
+  margin-top: 3px;
+}
+.portal-error {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--red);
+}
+.portal-error summary {
+  cursor: pointer;
+}
+.portal-error p {
+  color: var(--red);
+}
+@media (max-width: 760px) {
+  .portal-actions {
+    padding-left: 0;
+    gap: 7px;
+  }
+  .portal-section .section-title {
+    align-items: flex-start;
+  }
+  .portal-master-label {
+    font-size: 11px;
+  }
+  .portal-task {
+    flex-wrap: wrap;
+  }
+}

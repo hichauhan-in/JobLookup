@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from joblookup.config import Settings
+from joblookup.matching.eligibility import contains_phrase, location_fit
 from joblookup.models import seniority_rank
 from joblookup.sources import regions
 from joblookup.sources.normalize import age_days
@@ -35,6 +36,7 @@ def prefilter(
         "work_mode": 0,
         "not_remote": 0,
         "stale": 0,
+        "location": 0,
     }
     exclusions = [
         str(item).strip().lower() for item in profile.get("exclusions") or [] if str(item).strip()
@@ -48,8 +50,12 @@ def prefilter(
     kept: list[dict[str, Any]] = []
     for job in jobs:
         haystack = f"{job.get('title', '')} {job.get('company', '')}".lower()
-        if exclusions and any(term in haystack for term in exclusions):
+        if exclusions and any(contains_phrase(haystack, term) for term in exclusions):
             dropped["excluded"] += 1
+            continue
+
+        if location_fit(job, profile.get("locations") or [])[0] == "mismatch":
+            dropped["location"] += 1
             continue
 
         # The remote pack means remote, so anything not positively identified
