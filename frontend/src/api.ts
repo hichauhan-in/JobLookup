@@ -1,5 +1,5 @@
 import { QueryClient, useQuery } from "@tanstack/react-query";
-import type { Workspace } from "./types";
+import type { SearchTrack, Workspace } from "./types";
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -63,11 +63,27 @@ export function useWorkspace() {
   });
 }
 
+export function useTracks() {
+  return useQuery({
+    queryKey: ["tracks"],
+    queryFn: ({ signal }) => request<{ items: SearchTrack[] }>("/tracks", { signal }),
+  });
+}
+
 export async function refreshWorkspace() {
   await Promise.all(
-    ["workspace", "opportunities", "opportunity", "applications", "tasks"].map(
-      (key) => queryClient.invalidateQueries({ queryKey: [key] }),
-    ),
+    [
+      "workspace",
+      "opportunities",
+      "opportunity",
+      "applications",
+      "tasks",
+      "agenda",
+      "activity",
+      "versions",
+      "benchmark",
+      "digest",
+    ].map((key) => queryClient.invalidateQueries({ queryKey: [key] })),
   );
 }
 
@@ -80,4 +96,27 @@ export function errorMessage(error: unknown): string {
     return error.message;
   }
   return "Something went wrong. Please retry.";
+}
+
+export async function downloadFile(
+  path: string,
+  filename: string,
+): Promise<void> {
+  const response = await fetch(`/api${path}`, {
+    credentials: "same-origin",
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new ApiError(
+      payload.detail || `Download failed (HTTP ${response.status}).`,
+      response.status,
+    );
+  }
+  const url = URL.createObjectURL(await response.blob());
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

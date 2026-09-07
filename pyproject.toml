@@ -48,7 +48,7 @@ joblookup = "joblookup.__main__:main"
 include = ["joblookup*"]
 
 [tool.setuptools.package-data]
-joblookup = ["web/**/*", "db/*.sql", "sources/tier_b/portals/*.yaml", "tailor/templates/*"]
+joblookup = ["web/**/*", "db/*.sql", "sources/tier_b/portals/*.yaml", "tailor/templates/*", "capture_extension/*"]
 
 [tool.ruff]
 line-length = 100

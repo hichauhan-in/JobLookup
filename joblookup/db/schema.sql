@@ -191,3 +191,70 @@ CREATE TABLE IF NOT EXISTS setting (
 );
 
 INSERT OR IGNORE INTO profile (id, data) VALUES (1, '{}');
+
+CREATE TABLE IF NOT EXISTS search_track (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    preferences TEXT NOT NULL DEFAULT '{}',
+    sources TEXT NOT NULL DEFAULT '[]',
+    cv_id INTEGER REFERENCES cv(id) ON DELETE SET NULL,
+    schedule_enabled INTEGER NOT NULL DEFAULT 0,
+    schedule_hour INTEGER NOT NULL DEFAULT 9,
+    schedule_minute INTEGER NOT NULL DEFAULT 0,
+    schedule_weekdays TEXT NOT NULL DEFAULT '[0,1,2,3,4]',
+    last_slot TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS inbox_state (
+    job_id INTEGER NOT NULL REFERENCES job(id) ON DELETE CASCADE,
+    track_id INTEGER NOT NULL DEFAULT 0,
+    content_hash TEXT NOT NULL,
+    seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(job_id, track_id)
+);
+
+CREATE TABLE IF NOT EXISTS job_feedback (
+    job_id INTEGER NOT NULL REFERENCES job(id) ON DELETE CASCADE,
+    track_id INTEGER NOT NULL DEFAULT 0,
+    label TEXT NOT NULL CHECK(label IN ('relevant', 'adjacent', 'irrelevant')),
+    reason TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    job_snapshot TEXT NOT NULL,
+    profile_snapshot TEXT NOT NULL,
+    posting_age REAL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY(job_id, track_id)
+);
+
+CREATE TABLE IF NOT EXISTS application_event (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES application(job_id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS application_task (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES application(job_id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'followup',
+    due_at TEXT NOT NULL,
+    done_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_application_task_due ON application_task(done_at, due_at);
+
+CREATE TABLE IF NOT EXISTS resume_version (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES job(id) ON DELETE CASCADE,
+    cv_id INTEGER REFERENCES cv(id) ON DELETE SET NULL,
+    markdown TEXT NOT NULL,
+    base_text TEXT NOT NULL DEFAULT '',
+    prep_sheet TEXT NOT NULL DEFAULT '{}',
+    content TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 
 import uvicorn
@@ -15,11 +16,12 @@ from joblookup.sources.normalize import normalize, parse_date
 
 
 def main() -> None:
+    port = int(os.environ.get("JOBLOOKUP_UI_PORT", "8801"))
     with tempfile.TemporaryDirectory(prefix="joblookup-ui-") as directory:
         settings = Settings()
         settings.paths.workspace = directory
         settings.scheduler.enabled = False
-        settings.server.port = 8801
+        settings.server.port = port
         app = create_app(settings)
         store.save_profile(
             {
@@ -122,7 +124,7 @@ def main() -> None:
         store.link_run_jobs(run_id, produced)
         stats = CrawlStats(fetched=7, kept=7, new=7, by_source={"remoteok": 4, "greenhouse": 3})
         store.finish_run(run_id, status="ok", stats=stats.to_dict())
-        uvicorn.run(app, host="127.0.0.1", port=8801, log_level="warning", access_log=False)
+        uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning", access_log=False)
 
 
 if __name__ == "__main__":

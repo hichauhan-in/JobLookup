@@ -52,6 +52,8 @@ import {
 } from "../components/ui";
 import { useToast } from "../components/notifications";
 import { PortalSources } from "../components/PortalSources";
+import { WorkspaceTools } from "../components/WorkspaceTools";
+import { SearchReport } from "../components/SearchReport";
 
 export default function Settings() {
   const [params, setParams] = useSearchParams();
@@ -959,6 +961,7 @@ function HistorySettings() {
                     </div>
                   ))}
                 </div>
+                <SearchReport run={run} />
               </details>
             </article>
           ))}
@@ -1038,6 +1041,7 @@ function DataSettings() {
           <ArrowRight size={16} />
         </Link>
       </div>
+      <WorkspaceTools />
     </section>
   );
 }

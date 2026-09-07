@@ -430,6 +430,15 @@ def normalize(raw: RawJob, *, strict_location: bool = True) -> NormalizedJob:
     location_norm, country = normalize_location(location)
 
     salary_min, salary_max, currency = raw.salary_min, raw.salary_max, raw.salary_currency
+    salary_period = str(raw.salary_period or raw.raw.get("salary_period") or "").lower()
+    if salary_period not in {"hour", "day", "week", "month", "year"}:
+        unit = re.search(
+            r"(?:\d[\d,.]*\s*[kKmM]?\s*(?:USD|INR|EUR|GBP)?\s*"
+            r"(?:/|per\s+)(hour|day|week|month|year)|\b(per annum|annually|LPA)\b)",
+            description,
+            re.I,
+        )
+        salary_period = (unit.group(1) or "year").lower() if unit else ""
     if salary_min is None and salary_max is None:
         salary_min, salary_max, currency = parse_salary(f"{title}\n{description[:600]}")
 
@@ -454,6 +463,7 @@ def normalize(raw: RawJob, *, strict_location: bool = True) -> NormalizedJob:
         salary_min=salary_min,
         salary_max=salary_max,
         salary_currency=currency or "",
+        salary_period=salary_period,
         source_key=raw.source_key,
         source_job_id=str(raw.source_job_id or ""),
         raw=raw.raw,

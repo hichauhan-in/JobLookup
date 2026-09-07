@@ -122,9 +122,9 @@ models until you do, and that dialog only appears in response to a command you
 invoked. You can trigger it yourself with `JobLookup Bridge: Authorise Copilot
 Access`.
 
-**Keep a VS Code window open while JobLookup is scoring.** Searching, browsing
-and tracking all work without a model; reading a CV, scoring postings and
-tailoring need one.
+**Keep a VS Code window open when requesting a Copilot AI action.** Searching,
+local resume extraction, evidence scoring, and tracking do not need a model.
+AI analysis, reviews, and tailoring use the selected connection explicitly.
 
 To install or remove the bridge by hand: `.\scripts\install-bridge.ps1` and
 `.\scripts\install-bridge.ps1 -Uninstall`.
@@ -494,10 +494,15 @@ The current pipeline is deterministic and local:
 public sources -> normalization and deduplication -> eligibility and evidence -> views
 ```
 
-The workspace evaluates stored postings against the current profile, not stale
-AI scores. It checks role-title overlap, explicit skill mentions, recognized
-country/city restrictions, working arrangement, employment type, seniority,
-explicit experience requirements, exclusions, and posting age.
+The workspace evaluates stored postings against the current profile or selected
+search track, not stale AI scores. The `evidence-v2` engine recognizes a bounded
+set of related role families, separates management titles, and distinguishes
+required, preferred and negated skill mentions. Exact quotations remain visible.
+It checks recognized country/city restrictions, working arrangement, employment
+type, seniority, explicit experience requirements, exclusions, and posting age.
+Optional compensation, sponsorship, working-hours and posting-criteria checks
+use explicit evidence. Salary units and currencies must match; no conversion is
+invented, and a minimum-only range is not treated as an upper salary bound.
 
 Exact profile and posting content key a bounded assessment cache. Profile or
 posting edits invalidate the result immediately; freshness is rechecked at
@@ -515,11 +520,59 @@ override a detected eligibility conflict.
 | Seniority alignment | 10 |
 | Published date within the selected window | 5 |
 
-A known preference conflict excludes the posting regardless of points. Missing
+A known **Required** preference conflict excludes the posting regardless of points.
+**Preferred** constraints influence fit without hard exclusion; **Any** skips the
+constraint. Confirmed closure always excludes a posting. Missing
 location, date, description, or skill evidence routes it to **Needs review**.
 The score is an inspectable heuristic, not a calibrated hiring probability.
 Skill and geography dictionaries are deliberately conservative and are not
 exhaustive. Legal eligibility and unstated requirements still need human review.
+
+### Daily workflow
+
+- **Search tracks:** use the selector in Matches to create independent role,
+  location, source and resume-focused searches. The main career profile is not
+  overwritten. Track schedules use your computer's local time, run only while
+  JobLookup is running, and catch up once later on the same scheduled day.
+- **New & changed:** the inbox tracks posting content separately for each track.
+  Opening a posting or marking the current page reviewed acknowledges it.
+  Changed descriptions or eligibility data can bring a posting back.
+- **Daily brief:** an on-device summary of unseen opportunities and due actions,
+  with a Markdown download. No email service or external notification account
+  is connected.
+- **Relevance labels:** Relevant, Adjacent and Not relevant labels with reasons
+  are stored alongside posting/profile snapshots. The benchmark in Settings >
+  Workspace reports only this labeled sample, not general recommendation accuracy.
+  Label at least 50-100 representative jobs before using it to judge improvements.
+- **Application activity:** record recruiter details, interview/follow-up/deadline
+  dates, completed actions and status history. Resume history preserves drafts,
+  compares them with their source document, and flags newly introduced skill and
+  numeric claims for review. Record the submitted version on the application.
+  These checks are not a guarantee that generated statements are true.
+- **Capture:** preview a public URL, paste a job description or alert email, or
+  import an EML/HTML/text file. Confirm the posting fields before saving. The
+  optional Chrome/Edge helper is downloadable under Settings > Workspace and
+  reads the active tab only when clicked. Installation instructions are included.
+- **Backups:** export and preview a portable workspace ZIP under Settings >
+  Workspace. Restore requires confirmation, checks file hashes and database
+  relationships, creates a safety backup, and pauses restored schedules.
+  Connection settings, raw source payloads, and browser sessions are excluded.
+  Archives contain personal data and are not encrypted. Limits: 80 MB compressed,
+  160 MB expanded, 25 MB per document. Unavailable original files are reported.
+
+### Search coverage and freshness
+
+Query-based connectors account for every role/location combination, with at most
+24 combinations per source per run and the configured posting budget. The search
+report shows completed, skipped, partial and failed queries, plus fetched,
+detailed, recommended and new posting counts. Retry incomplete searches reuses
+only unfinished combinations where possible. Completed sources are ingested while
+other sources are still running. A blocked portal stops further requests.
+
+Public portal enrichment remains deliberately bounded. Partial listing snippets
+stay in Needs review even when long. A public availability check distinguishes a
+closed/missing listing, a published JobPosting, and an unverified or blocked page;
+a published listing is not a guarantee that applications are still accepted.
 
 ### Deduplication
 

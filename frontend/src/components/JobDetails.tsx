@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ArrowUpRight,
@@ -11,16 +11,29 @@ import {
   ShieldCheck,
   Sparkles,
   XCircle,
+  RefreshCw,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { errorMessage, post, refreshWorkspace, request } from "../api";
+import {
+  errorMessage,
+  post,
+  queryClient,
+  refreshWorkspace,
+  request,
+} from "../api";
 import { ago, companyColor, initials, label, salary } from "../lib/format";
-import type { Opportunity, Resume, Review, Task } from "../types";
-import { Dialog, ErrorState, FitBadge, Spinner } from "./ui";
+import type { Feedback, Opportunity, Resume, Review, Task } from "../types";
+import { Dialog, ErrorState, FitBadge, IconButton, Spinner } from "./ui";
 import { useToast } from "./notifications";
+import { RelevanceFeedback } from "./RelevanceFeedback";
+import { ResumeHistory } from "./ResumeHistory";
 
-type DetailResponse = { job: Opportunity; review: Review | null };
+type DetailResponse = {
+  job: Opportunity;
+  review: Review | null;
+  feedback?: Feedback | null;
+};
 type TailoredResponse = {
   cvs: Resume[];
   tailored?: {
@@ -34,17 +47,23 @@ type TailoredResponse = {
 export function JobDetails({
   id,
   onClose,
+  trackId = 0,
+  defaultCv,
 }: {
   id: number;
   onClose: () => void;
+  trackId?: number;
+  defaultCv?: number | null;
 }) {
   const [tab, setTab] = useState("overview");
-  const [baseCv, setBaseCv] = useState<number | null>(null);
+  const [baseCv, setBaseCv] = useState<number | null>(defaultCv || null);
   const notify = useToast();
   const detail = useQuery({
-    queryKey: ["opportunity", id],
+    queryKey: ["opportunity", id, trackId],
     queryFn: ({ signal }) =>
-      request<DetailResponse>(`/opportunities/${id}`, { signal }),
+      request<DetailResponse>(`/opportunities/${id}?track_id=${trackId}`, {
+        signal,
+      }),
   });
   const documents = useQuery({
     queryKey: ["opportunity", id, "documents"],
@@ -63,7 +82,9 @@ export function JobDetails({
   const action = useMutation({
     mutationFn: (kind: "review" | "tailor") =>
       kind === "review"
-        ? post<{ task: Task }>(`/opportunities/${id}/review`)
+        ? post<{ task: Task }>(`/opportunities/${id}/review`, {
+            track_id: trackId,
+          })
         : post<{ task: Task }>(`/jobs/${id}/tailor`, { cv_id: baseCv }),
     onSuccess: async () => {
       notify("AI request started.");
@@ -72,6 +93,23 @@ export function JobDetails({
     onError: (error) => notify(errorMessage(error), "error"),
   });
   const job = detail.data?.job;
+  const jobId = job?.id;
+  useEffect(() => {
+    if (!jobId) return;
+    void post("/inbox/seen", { job_ids: [jobId], track_id: trackId })
+      .then(() =>
+        queryClient.invalidateQueries({ queryKey: ["opportunities"] }),
+      )
+      .catch(() => {});
+  }, [jobId, trackId]);
+  const check = useMutation({
+    mutationFn: () => post(`/opportunities/${id}/check`),
+    onSuccess: async () => {
+      await refreshWorkspace();
+      notify("Public availability check started.");
+    },
+    onError: (error) => notify(errorMessage(error), "error"),
+  });
   const tabs = [
     { id: "overview", name: "Overview" },
     { id: "evidence", name: "Fit evidence" },
@@ -184,6 +222,39 @@ export function JobDetails({
                       </div>
                     </div>
                   )}
+                  <RelevanceFeedback
+                    key={`${id}-${trackId}-${detail.data?.feedback?.label || "none"}`}
+                    jobId={id}
+                    trackId={trackId}
+                    initial={detail.data?.feedback}
+                  />
+                  <div className="availability-row">
+                    <div>
+                      <strong>
+                        {job.availability === "closed"
+                          ? "Posting closed"
+                          : job.availability === "listed"
+                            ? "Public listing found"
+                            : "Availability unverified"}
+                      </strong>
+                      <p>
+                        {job.availability_detail ||
+                          "No public availability check yet."}
+                      </p>
+                      {job.checked_at && (
+                        <small>
+                          Checked {ago(job.checked_at).toLowerCase()}
+                        </small>
+                      )}
+                    </div>
+                    <IconButton
+                      label="Check posting availability"
+                      disabled={check.isPending}
+                      onClick={() => check.mutate()}
+                    >
+                      <RefreshCw size={16} />
+                    </IconButton>
+                  </div>
                   <h2 className="section-heading">About the role</h2>
                   <div className="prose">
                     <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>
@@ -238,8 +309,14 @@ export function JobDetails({
                           <p>{criterion.detail}</p>
                         </div>
                         <span>
-                          {criterion.points}
-                          <small> / {criterion.maximum}</small>
+                          {criterion.maximum > 0 ? (
+                            <>
+                              {criterion.points}
+                              <small> / {criterion.maximum}</small>
+                            </>
+                          ) : (
+                            label(criterion.state)
+                          )}
                         </span>
                       </div>
                     ))}
@@ -266,6 +343,13 @@ export function JobDetails({
                         <summary>
                           <ShieldCheck size={15} />
                           {entry.skill}
+                          {entry.importance && (
+                            <span
+                              className={`requirement-label ${entry.importance}`}
+                            >
+                              {label(entry.importance)}
+                            </span>
+                          )}
                         </summary>
                         <blockquote>{entry.quote}</blockquote>
                       </details>
@@ -283,6 +367,23 @@ export function JobDetails({
                       </div>
                     </section>
                   )}
+                  {job.fit.requirements
+                    ?.filter((entry) => entry.importance === "required")
+                    .map((entry) => (
+                      <details
+                        className="evidence-item missing-requirement"
+                        key={entry.skill}
+                      >
+                        <summary>
+                          <CircleHelp size={15} />
+                          {entry.skill}
+                          <span className="requirement-label required">
+                            Required, not in profile
+                          </span>
+                        </summary>
+                        <blockquote>{entry.quote}</blockquote>
+                      </details>
+                    ))}
                 </>
               )}
               {tab === "review" && (
@@ -426,6 +527,7 @@ export function JobDetails({
                       )}
                     </>
                   )}
+                  <ResumeHistory jobId={id} />
                 </>
               )}
             </div>

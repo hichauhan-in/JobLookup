@@ -21,17 +21,23 @@ from joblookup.llm import LLMClient
 from joblookup.matching.evidence import ENGINE_VERSION, evaluate_job
 from joblookup.matching.pipeline import run_matching
 from joblookup.server.jobs import Job, manager
-from joblookup.services import crawl, profiling
+from joblookup.services import crawl, profiling, workflow
 from joblookup.sources import registry
 
 
 class DiscoverRequest(BaseModel):
     sources: list[str] | None = Field(default=None, max_length=50)
     days: int = Field(default=14, ge=1, le=365)
+    track_id: int = Field(default=0, ge=0)
+    retry_run_id: int | None = Field(default=None, ge=1)
 
 
 class ResetMatches(BaseModel):
     include_tracked: bool = False
+
+
+class ReviewRequest(BaseModel):
+    track_id: int = Field(default=0, ge=0)
 
 
 def safe_link(value: str | None) -> str:
@@ -46,13 +52,20 @@ def safe_link(value: str | None) -> str:
         return ""
 
 
-def _review_key(job: dict[str, Any], version: int) -> str:
+def _review_version(version: int, profile: dict[str, Any], track_id: int) -> int | str:
+    if not track_id:
+        return version
+    digest = hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest()[:16]
+    return f"{version}:{track_id}:{digest}"
+
+
+def _review_key(job: dict[str, Any], version: int | str) -> str:
     content = f"{job.get('title')}\n{job.get('location')}\n{job.get('description')}"
     digest = hashlib.sha256(content.encode()).hexdigest()[:16]
     return f"review:{job['id']}:{version}:{digest}"
 
 
-def _load_review(job: dict[str, Any], version: int) -> dict[str, Any] | None:
+def _load_review(job: dict[str, Any], version: int | str) -> dict[str, Any] | None:
     record = (
         db.connect()
         .execute("SELECT value FROM setting WHERE key = ?", (_review_key(job, version),))
@@ -79,6 +92,13 @@ def _fit(job: dict[str, Any], profile_json: str, days: int) -> dict[str, Any]:
             "employment",
             "seniority",
             "posted_at",
+            "salary_min",
+            "salary_max",
+            "salary_currency",
+            "salary_period",
+            "availability",
+            "partial_description",
+            "raw",
         )
     }
     return _cached_fit(
@@ -107,7 +127,8 @@ def build_router(settings_getter: Callable[[], Settings]) -> APIRouter:
 
     @router.get("/opportunities")
     def opportunities(
-        view: Literal["recommended", "review", "all", "hidden"] = "recommended",
+        view: Literal["recommended", "review", "all", "hidden", "inbox"] = "recommended",
+        track_id: int = Query(default=0, ge=0),
         query: str = Query(default="", max_length=200),
         mode: Literal["all", "remote", "hybrid", "onsite"] = "all",
         source: str = Query(default="", max_length=100),
@@ -117,12 +138,23 @@ def build_router(settings_getter: Callable[[], Settings]) -> APIRouter:
         page_size: int = Query(default=20, ge=1, le=100),
     ) -> dict[str, Any]:
         profile_row = store.get_profile()
-        profile = profile_row.get("data") or {}
+        try:
+            profile = workflow.effective_profile(track_id)
+            track = workflow.get_track(track_id) if track_id else None
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
         profile_json = json.dumps(profile, sort_keys=True)
         rows = store.match_candidates()
-        buckets = {"recommended": 0, "review": 0, "excluded": 0, "hidden": 0, "all": 0}
+        seen = workflow.seen_hashes(track_id)
+        buckets = {"recommended": 0, "review": 0, "excluded": 0, "hidden": 0, "all": 0, "inbox": 0}
         items = []
         for row in rows:
+            if (
+                track
+                and track["sources"]
+                and not set(track["sources"]).intersection(row["source_keys"])
+            ):
+                continue
             if query and query.casefold() not in f"{row['title']} {row['company']}".casefold():
                 continue
             if mode != "all" and row["work_mode"] != mode:
@@ -131,13 +163,24 @@ def build_router(settings_getter: Callable[[], Settings]) -> APIRouter:
                 continue
             fit = _fit(row, profile_json, days)
             category = "recommended" if fit["band"] in {"strong", "good"} else fit["band"]
+            unread = seen.get(row["id"]) != workflow.posting_hash(row)
+            row["inbox_state"] = (
+                "changed" if unread and row["id"] in seen else "new" if unread else "seen"
+            )
+            if unread and not row["hidden"] and fit["eligible"]:
+                buckets["inbox"] += 1
             if row["hidden"]:
                 buckets["hidden"] += 1
             else:
                 buckets[category] += 1
                 buckets["all"] += 1
             included = (view == "hidden" and row["hidden"]) or (
-                not row["hidden"] and (view == "all" or category == view)
+                not row["hidden"]
+                and (
+                    view == "all"
+                    or category == view
+                    or (view == "inbox" and unread and fit["eligible"])
+                )
             )
             if included:
                 row.pop("description", None)
@@ -176,11 +219,15 @@ def build_router(settings_getter: Callable[[], Settings]) -> APIRouter:
         }
 
     @router.get("/opportunities/{job_id}")
-    def opportunity(job_id: int) -> dict[str, Any]:
+    def opportunity(job_id: int, track_id: int = Query(default=0, ge=0)) -> dict[str, Any]:
         job = store.get_job(job_id)
         if not job:
             raise HTTPException(404, "This job is no longer stored.")
         profile = store.get_profile()
+        try:
+            profile["data"] = workflow.effective_profile(track_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
         days = int(
             (profile["data"] or {}).get("recency_days") or settings_getter().search.recency_days
         )
@@ -189,15 +236,51 @@ def build_router(settings_getter: Callable[[], Settings]) -> APIRouter:
         job["apply_url"] = safe_link(job.get("apply_url"))
         for source in job.get("sources") or []:
             source["url"] = safe_link(source.get("url"))
-        return {"job": job, "review": _load_review(job, profile["version"])}
+        return {
+            "job": job,
+            "review": _load_review(
+                job, _review_version(profile["version"], profile["data"], track_id)
+            ),
+            "feedback": workflow.feedback(job_id, track_id),
+        }
 
     @router.post("/discover")
     def discover(body: DiscoverRequest) -> dict[str, Any]:
         settings = settings_getter().model_copy(deep=True)
-        if not (store.get_profile().get("data") or {}).get("target_titles"):
+        query_plans = {}
+        if body.retry_run_id:
+            previous = (
+                db.connect()
+                .execute(
+                    "SELECT stats, sources, track_id FROM crawl_run WHERE id = ?",
+                    (body.retry_run_id,),
+                )
+                .fetchone()
+            )
+            if not previous:
+                raise HTTPException(404, "This search run no longer exists.")
+            previous_stats = db.loads(previous["stats"])
+            query_plans = {
+                key: [entry for entry in report if entry["status"] != "complete"]
+                for key, report in previous_stats.get("coverage", {}).items()
+                if any(entry["status"] != "complete" for entry in report)
+            }
+            retry_sources = list(dict.fromkeys([*query_plans, *previous_stats.get("failures", {})]))
+            if not retry_sources:
+                raise HTTPException(400, "That search has no incomplete source queries to retry.")
+            body.sources = retry_sources
+            body.track_id = previous["track_id"] or 0
+        try:
+            profile = workflow.effective_profile(body.track_id)
+            track = workflow.get_track(body.track_id) if body.track_id else None
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        if not profile.get("target_titles"):
             raise HTTPException(400, "Add a target role in your profile before searching.")
         sources = registry.list_sources(settings)
         selected = [row for row in sources if row["enabled"]]
+        if track and track["sources"]:
+            selected = [row for row in selected if row["key"] in track["sources"]]
         if body.sources is not None:
             selected = [row for row in selected if row["key"] in body.sources]
         ready = [row["key"] for row in selected if row["ready"]]
@@ -211,16 +294,33 @@ def build_router(settings_getter: Callable[[], Settings]) -> APIRouter:
         def work(bus: EventBus, task: Job) -> dict[str, Any]:
             for name, reason in unavailable.items():
                 bus.warn(f"{name}: {reason}", stage="fetch")
+            options = {"profile": profile} if body.track_id else {}
+            if query_plans:
+                options["query_plans"] = query_plans
             stats = crawl.run_crawl(
-                settings, bus, source_keys=ready, cancelled=task.cancel_requested.is_set
+                settings, bus, source_keys=ready, cancelled=task.cancel_requested.is_set, **options
             )
+            if body.track_id and stats.run_id:
+                with db.transaction() as conn:
+                    conn.execute(
+                        "UPDATE crawl_run SET track_id = ? WHERE id = ?",
+                        (body.track_id, stats.run_id),
+                    )
             result: dict[str, Any] = {"crawl": stats.to_dict()}
-            if not task.cancel_requested.is_set():
+            if not task.cancel_requested.is_set() and not body.track_id:
                 result["match"] = run_matching(
                     settings, None, bus, cancelled=task.cancel_requested.is_set
                 )
             result["counts"] = store.counts()
-            result["partial"] = bool(stats.failures or unavailable)
+            result["partial"] = bool(
+                stats.failures
+                or unavailable
+                or any(
+                    entry["status"] != "complete"
+                    for report in stats.coverage.values()
+                    for entry in report
+                )
+            )
             result["unavailable_sources"] = unavailable
             return result
 
@@ -245,12 +345,16 @@ def build_router(settings_getter: Callable[[], Settings]) -> APIRouter:
         return {"removed": removed, "counts": store.counts()}
 
     @router.post("/opportunities/{job_id}/review")
-    def review(job_id: int) -> dict[str, Any]:
+    def review(job_id: int, body: ReviewRequest = ReviewRequest()) -> dict[str, Any]:
         job = store.get_job(job_id)
         if not job:
             raise HTTPException(404, "This job is no longer stored.")
         row = store.get_profile()
-        profile = row["data"]
+        try:
+            profile = workflow.effective_profile(body.track_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        review_version = _review_version(row["version"], profile, body.track_id)
         if not profile.get("target_titles"):
             raise HTTPException(400, "Complete your profile before requesting an AI review.")
         settings = settings_getter().model_copy(deep=True)
@@ -323,7 +427,7 @@ def build_router(settings_getter: Callable[[], Settings]) -> APIRouter:
                     conn.execute(
                         "INSERT INTO setting (key, value) VALUES (?, ?) "
                         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                        (_review_key(job, row["version"]), json.dumps(review_result)),
+                        (_review_key(job, review_version), json.dumps(review_result)),
                     )
             return {"review": review_result, "job_id": job_id}
 

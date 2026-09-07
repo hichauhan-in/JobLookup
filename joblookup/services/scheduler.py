@@ -22,9 +22,15 @@ Trigger = Callable[[], Any]
 
 
 class Scheduler:
-    def __init__(self, get_settings: Callable[[], Settings], trigger: Trigger) -> None:
+    def __init__(
+        self,
+        get_settings: Callable[[], Settings],
+        trigger: Trigger,
+        tick_hook: Trigger | None = None,
+    ) -> None:
         self._get_settings = get_settings
         self._trigger = trigger
+        self._tick_hook = tick_hook
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._last_fired: str = ""
@@ -52,6 +58,8 @@ class Scheduler:
                 continue
 
     def _tick(self) -> None:
+        if self._tick_hook:
+            self._tick_hook()
         config = self._get_settings().scheduler
         if not config.enabled:
             return

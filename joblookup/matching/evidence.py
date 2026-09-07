@@ -6,11 +6,18 @@ import re
 from functools import lru_cache
 from typing import Any
 
+from joblookup.matching.constraints import additional_constraints, priority
 from joblookup.matching.eligibility import contains_phrase, location_fit
+from joblookup.matching.requirements import (
+    IMPORTANCE,
+    management_role,
+    requirement_context,
+    role_family,
+)
 from joblookup.models import seniority_rank
 from joblookup.sources.normalize import age_days, normalize_title
 
-ENGINE_VERSION = "evidence-v1"
+ENGINE_VERSION = "evidence-v2"
 
 SKILLS = {
     "Python": ("python",),
@@ -156,16 +163,31 @@ def _aliases(name: str) -> tuple[str, ...]:
 
 
 def skill_evidence(text: str, name: str, *, folded: str | None = None) -> str | None:
+    evidence = skill_requirement(text, name, folded=folded)
+    return evidence["quote"] if evidence else None
+
+
+def skill_requirement(text: str, name: str, *, folded: str | None = None) -> dict[str, str] | None:
     folded = text.casefold() if folded is None else folded
+    best = None
     for alias in _aliases(name):
         if alias.casefold() not in folded:
             continue
-        found = _pattern(alias).search(text)
-        if found:
+        for found in _pattern(alias).finditer(text):
+            importance, _ = requirement_context(text, found.start(), found.end())
+            if importance == "negated":
+                continue
             start = max(0, found.start() - 60)
             end = min(len(text), found.end() + 95)
-            return " ".join(text[start:end].split())
-    return None
+            if best is None or IMPORTANCE[importance] > IMPORTANCE[best["importance"]]:
+                best = {
+                    "skill": name,
+                    "quote": " ".join(text[start:end].split()),
+                    "importance": importance,
+                }
+            if importance == "required":
+                return best
+    return best
 
 
 def skills_from_text(text: str) -> list[dict[str, Any]]:
@@ -190,12 +212,17 @@ def role_fit(title: str, targets: list[str]) -> tuple[float, str]:
     best = (0.0, "")
     actual = role_terms(title)
     for target in targets:
+        if management_role(title) != management_role(target):
+            continue
         desired = role_terms(target)
         if desired and actual:
             overlap = len(desired & actual)
             fit = overlap / max(len(desired), len(actual))
         else:
             fit = float(normalize_title(title) == normalize_title(target))
+        family = role_family(title)
+        if family and family == role_family(target):
+            fit = max(fit, 0.8)
         if fit > best[0]:
             best = (fit, target)
     return best
@@ -214,16 +241,14 @@ def evaluate_job(
     ]
     skills = list(dict.fromkeys(value.strip() for value in skills if value.strip()))
     matched = [
-        {"skill": name, "quote": quote}
-        for name in skills
-        if (quote := skill_evidence(text, name, folded=folded))
+        evidence for name in skills if (evidence := skill_requirement(text, name, folded=folded))
     ]
     candidate_aliases = {alias.casefold() for name in skills for alias in _aliases(name)}
     mentioned = [
-        name
+        evidence
         for name, aliases in SKILLS.items()
         if not candidate_aliases.intersection(alias.casefold() for alias in aliases)
-        and skill_evidence(text, name, folded=folded)
+        and (evidence := skill_requirement(text, name, folded=folded))
     ]
     blockers: list[str] = []
     warnings: list[str] = []
@@ -247,7 +272,9 @@ def evaluate_job(
         }
     )
 
-    coverage = len(matched) / max(1, len(matched) + len(mentioned))
+    matched_weight = sum(IMPORTANCE[entry["importance"]] for entry in matched)
+    missing_weight = sum(IMPORTANCE[entry["importance"]] for entry in mentioned)
+    coverage = matched_weight / max(0.01, matched_weight + missing_weight)
     if not skills:
         warnings.append("Add skills or a resume to assess the requirements.")
     elif not matched:
@@ -264,9 +291,9 @@ def evaluate_job(
     )
 
     geography, detail = location_fit(job, profile.get("locations") or [])
-    if geography == "mismatch":
+    if geography == "mismatch" and priority(profile, "location") == "required":
         blockers.append(detail)
-    elif geography == "unknown":
+    elif geography == "unknown" and priority(profile, "location") == "required":
         warnings.append(detail)
     criteria.append(
         {
@@ -281,15 +308,47 @@ def evaluate_job(
 
     mode = str(job.get("work_mode") or "unknown")
     modes = profile.get("work_modes") or []
-    if modes and mode not in modes:
+    if modes and mode not in modes and priority(profile, "work_mode") != "any":
         if mode == "unknown":
-            warnings.append("The working arrangement is not stated.")
+            if priority(profile, "work_mode") == "required":
+                warnings.append("The working arrangement is not stated.")
         else:
-            blockers.append(f"{mode.title()} work is outside your preferred arrangements.")
+            detail = f"{mode.title()} work is outside your preferred arrangements."
+            if priority(profile, "work_mode") == "required":
+                blockers.append(detail)
+            else:
+                criteria.append(
+                    {
+                        "key": "work_mode",
+                        "label": "Working arrangement",
+                        "state": "partial",
+                        "detail": detail,
+                        "points": -5,
+                        "maximum": 0,
+                    }
+                )
     employment = str(job.get("employment") or "unknown")
     wanted_employment = profile.get("employment_types") or []
-    if wanted_employment and employment != "unknown" and employment not in wanted_employment:
-        blockers.append(f"{employment.title()} is outside your preferred employment types.")
+    if (
+        wanted_employment
+        and employment != "unknown"
+        and employment not in wanted_employment
+        and priority(profile, "employment") != "any"
+    ):
+        detail = f"{employment.title()} is outside your preferred employment types."
+        if priority(profile, "employment") == "required":
+            blockers.append(detail)
+        else:
+            criteria.append(
+                {
+                    "key": "employment",
+                    "label": "Employment type",
+                    "state": "partial",
+                    "detail": detail,
+                    "points": -5,
+                    "maximum": 0,
+                }
+            )
 
     actual_level = seniority_rank(job.get("seniority"))
     desired_level = seniority_rank(profile.get("seniority"))
@@ -350,13 +409,31 @@ def evaluate_job(
             "maximum": 5,
         }
     )
-    if len(str(job.get("description") or "")) < 120:
+    if len(str(job.get("description") or "")) < 120 or job.get("partial_description"):
         warnings.append("The description is incomplete; review the original posting.")
     for excluded in profile.get("exclusions") or []:
         if contains_phrase(f"{title} {job.get('company') or ''}", str(excluded)):
             blockers.append(f"Matches your exclusion: {excluded}.")
 
-    score = sum(criterion["points"] for criterion in criteria)
+    for constraint in additional_constraints(job, profile):
+        mode = priority(profile, constraint["key"])
+        if mode == "any" and constraint["key"] != "availability":
+            continue
+        if constraint["state"] == "mismatch":
+            if mode == "required" or constraint["key"] == "availability":
+                blockers.append(constraint["detail"])
+        elif constraint["state"] == "unknown" and mode == "required":
+            warnings.append(constraint["detail"])
+        criteria.append(
+            constraint
+            | {
+                "points": -5 if mode == "preferred" and constraint["state"] == "mismatch" else 0,
+                "maximum": 0,
+                "priority": mode,
+            }
+        )
+
+    score = max(0, sum(criterion["points"] for criterion in criteria))
     if blockers:
         band = "excluded"
     elif warnings or score < 60:
@@ -377,7 +454,8 @@ def evaluate_job(
         "eligible": not blockers,
         "summary": summary,
         "matched_skills": matched,
-        "other_skills": mentioned[:12],
+        "other_skills": [entry["skill"] for entry in mentioned[:12]],
+        "requirements": mentioned[:20],
         "criteria": criteria,
         "blockers": blockers,
         "warnings": warnings,

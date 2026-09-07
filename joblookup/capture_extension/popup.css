@@ -1,0 +1,10 @@
+body { width: 300px; margin: 0; padding: 20px; box-sizing: border-box; background: #f7f9f8; color: #21372b; font: 14px "Aptos", "Trebuchet MS", sans-serif; }
+header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+header strong { font-size: 23px; }
+header span { font-size: 10px; color: #58675e; }
+label { display: block; margin-bottom: 7px; font-size: 12px; }
+input, button { width: 100%; box-sizing: border-box; border-radius: 5px; min-height: 40px; padding: 9px; font: inherit; }
+input { border: 1px solid #bacbbf; background: white; }
+button { cursor: pointer; border: 0; background: #267b52; color: white; margin: 14px 0; }
+button:disabled { opacity: .6; cursor: wait; }
+p { margin: 0; font-size: 12px; line-height: 1.5; color: #58675e; overflow-wrap: anywhere; }

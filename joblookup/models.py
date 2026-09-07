@@ -58,6 +58,7 @@ class RawJob:
     salary_max: float | None = None
     salary_currency: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
+    salary_period: str = ""
 
 
 @dataclass(slots=True)
@@ -85,6 +86,7 @@ class NormalizedJob:
     source_key: str = ""
     source_job_id: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
+    salary_period: str = ""
 
     def searchable(self) -> str:
         """The text recall and embeddings actually look at."""
@@ -124,6 +126,7 @@ class SourceResult:
     jobs: list[RawJob] = field(default_factory=list)
     error: str = ""
     detail: str = ""
+    coverage: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def count(self) -> int:
@@ -141,6 +144,9 @@ class CrawlStats:
     thin: int = 0
     by_source: dict[str, int] = field(default_factory=dict)
     failures: dict[str, str] = field(default_factory=dict)
+    coverage: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    quality: dict[str, dict[str, int]] = field(default_factory=dict)
+    run_id: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -30,6 +30,7 @@ import {
   TagInput,
 } from "../components/ui";
 import { useToast } from "../components/notifications";
+import { PreferenceFields } from "../components/PreferenceFields";
 
 export default function Profile() {
   const workspace = useWorkspace();
@@ -402,6 +403,19 @@ function ProfileEditor({
                   placeholder="https://"
                 />
               </Field>
+            </section>
+            <section className="form-section">
+              <div className="section-title">
+                <h2>
+                  <ShieldCheck size={19} /> Eligibility & priorities
+                </h2>
+              </div>
+              <PreferenceFields
+                profile={form}
+                onChange={(patch) =>
+                  setEdits((current) => ({ ...current, ...patch }))
+                }
+              />
             </section>
           </div>
           <aside className="profile-aside">

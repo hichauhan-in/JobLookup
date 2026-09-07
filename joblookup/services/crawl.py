@@ -17,26 +17,30 @@ from joblookup import store
 from joblookup.config import Settings
 from joblookup.db import session as db
 from joblookup.events import EventBus
+from joblookup.matching.evidence import evaluate_job
 from joblookup.models import CrawlStats, NormalizedJob, RawJob, SourceResult
 from joblookup.sources import normalize as norm
 from joblookup.sources import registry
 from joblookup.sources.base import SourceAdapter, SourceError
+from joblookup.sources.search_plan import QUERY_SOURCES, execute_plan
 from joblookup.sources.tier_b.browser import PlaywrightMissing, TierBBlocked, TierBDisabled
 
 Cancelled = Callable[[], bool]
 
 
-def profile_queries(settings: Settings) -> tuple[list[str], list[str]]:
+def profile_queries(
+    settings: Settings, profile: dict[str, Any] | None = None
+) -> tuple[list[str], list[str]]:
     """The titles and places the keyed APIs should search for.
 
     Falls back to nothing rather than to a guess: a source asked for "" returns
     its newest postings, which is a reasonable answer. A source asked for a
     wrong keyword returns confidently irrelevant results.
     """
-    profile = store.get_profile().get("data") or {}
+    profile = profile if profile is not None else store.get_profile().get("data") or {}
     titles = [str(item).strip() for item in profile.get("target_titles") or [] if str(item).strip()]
     locations = [str(item).strip() for item in profile.get("locations") or [] if str(item).strip()]
-    return titles[:5], locations[:3]
+    return list(dict.fromkeys(titles)), list(dict.fromkeys(locations))
 
 
 def fetch_one(
@@ -46,6 +50,7 @@ def fetch_one(
     locations: list[str],
     bus: EventBus,
     cancelled: Cancelled,
+    query_plans: dict[str, list[dict[str, Any]]] | None = None,
 ) -> SourceResult:
     context = registry.context_for(
         adapter.key,
@@ -55,12 +60,18 @@ def fetch_one(
         log=lambda message: bus.log(message, stage="fetch"),
         cancelled=cancelled,
     )
+    if query_plans and query_plans.get(adapter.key):
+        context.config = context.config | {"_pending_queries": query_plans[adapter.key]}
     ready, reason = adapter.is_configured(context)
     if not ready:
         return SourceResult(adapter.key, status="skipped", detail=reason)
 
     try:
-        jobs = adapter.fetch(context)
+        jobs = (
+            execute_plan(context, adapter.fetch)
+            if adapter.key in QUERY_SOURCES
+            else adapter.fetch(context)
+        )
     except TierBDisabled as exc:
         return SourceResult(adapter.key, status="skipped", detail=str(exc))
     except (TierBBlocked, PlaywrightMissing) as exc:
@@ -70,7 +81,19 @@ def fetch_one(
     except Exception as exc:  # noqa: BLE001
         return SourceResult(adapter.key, status="failed", error=f"{type(exc).__name__}: {exc}")
 
-    return SourceResult(adapter.key, status="ok" if jobs else "empty", jobs=jobs)
+    failures = [
+        entry.get("reason", "")
+        for entry in context.search_report
+        if entry["status"] in {"failed", "partial"}
+    ]
+    status = "partial" if failures and jobs else "failed" if failures else "ok" if jobs else "empty"
+    return SourceResult(
+        adapter.key,
+        status=status,
+        jobs=jobs,
+        error="; ".join(failures),
+        coverage=context.search_report,
+    )
 
 
 def run_crawl(
@@ -79,6 +102,8 @@ def run_crawl(
     *,
     source_keys: list[str] | None = None,
     cancelled: Cancelled = lambda: False,
+    profile: dict[str, Any] | None = None,
+    query_plans: dict[str, list[dict[str, Any]]] | None = None,
 ) -> CrawlStats:
     registry.sync_source_table()
     adapters = [
@@ -90,9 +115,11 @@ def run_crawl(
         bus.warn("No sources are enabled. Turn some on from the Sources screen.")
         return CrawlStats()
 
-    queries, locations = profile_queries(settings)
+    queries, locations = profile_queries(settings, profile)
     run_id = store.start_run([adapter.key for adapter in adapters])
-    stats = CrawlStats()
+    stats = CrawlStats(run_id=run_id)
+    matching_profile = profile if profile is not None else store.get_profile().get("data") or {}
+    produced: dict[int, bool] = {}
 
     # --- fetch ------------------------------------------------------------
     bus.stage_start("fetch", f"Asking {len(adapters)} source(s)")
@@ -100,7 +127,9 @@ def run_crawl(
     workers = max(1, min(settings.search.max_concurrent_sources, len(adapters)))
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="joblookup-fetch") as pool:
         futures = {
-            pool.submit(fetch_one, adapter, settings, queries, locations, bus, cancelled): adapter
+            pool.submit(
+                fetch_one, adapter, settings, queries, locations, bus, cancelled, query_plans
+            ): adapter
             for adapter in adapters
         }
         for done, future in enumerate(as_completed(futures), start=1):
@@ -110,7 +139,15 @@ def run_crawl(
             registry.record_result(result.key, result.status, result.count, result.error)
 
             stats.by_source[result.key] = result.count
-            if result.status == "failed":
+            stats.coverage[result.key] = result.coverage
+            stats.quality[result.key] = {
+                "fetched": result.count,
+                "full_description": sum(
+                    len(job.description) >= 300 and not job.raw.get("partial_description")
+                    for job in result.jobs
+                ),
+            }
+            if result.error:
                 stats.failures[result.key] = result.error
                 bus.warn(f"{adapter.name}: {result.error}", stage="fetch")
             elif result.status == "skipped":
@@ -118,32 +155,38 @@ def run_crawl(
             else:
                 bus.log(f"{adapter.name}: {result.count} posting(s)", stage="fetch")
             bus.progress("fetch", done / len(adapters), f"{done}/{len(adapters)} sources")
+            kept_ids = set()
+            new_count = 0
+            for raw in result.jobs:
+                if cancelled():
+                    break
+                kept = ingest_one(raw, settings, stats)
+                if kept is not None:
+                    job_id, is_new = kept
+                    produced[job_id] = produced.get(job_id, False) or is_new
+                    kept_ids.add(job_id)
+                    new_count += int(is_new)
+            stats.quality[result.key].update(
+                kept=len(kept_ids),
+                new=new_count,
+                relevant=sum(
+                    evaluate_job(
+                        store.get_job(job_id),
+                        matching_profile,
+                        recency_days=settings.search.recency_days,
+                    )["band"]
+                    in {"strong", "good"}
+                    for job_id in kept_ids
+                ),
+            )
+            store.link_run_jobs(run_id, produced)
 
     stats.fetched = sum(result.count for result in results)
     bus.stage_end("fetch", f"{stats.fetched} posting(s) fetched", fetched=stats.fetched)
 
-    if cancelled():
-        store.finish_run(run_id, status="cancelled", stats=stats.to_dict())
-        return stats
-
-    # --- reconcile ---------------------------------------------------------
-    bus.stage_start("ingest", "Cleaning up and removing duplicates")
-    raw_jobs = [job for result in results for job in result.jobs]
-    produced: dict[int, bool] = {}
-    for index, raw in enumerate(raw_jobs, start=1):
-        if cancelled():
-            break
-        kept = ingest_one(raw, settings, stats)
-        if kept is not None:
-            job_id, is_new = kept
-            # A posting seen twice in one run is new only if it was new the first time.
-            produced[job_id] = produced.get(job_id, False) or is_new
-        if index % 25 == 0:
-            bus.progress("ingest", index / max(1, len(raw_jobs)), f"{index}/{len(raw_jobs)}")
-
     store.link_run_jobs(run_id, produced)
 
-    archived = store.archive_stale(settings.search.archive_after_days)
+    archived = 0 if cancelled() else store.archive_stale(settings.search.archive_after_days)
     bus.stage_end(
         "ingest",
         f"{stats.new} new, {stats.updated} updated, {stats.duplicates} duplicate, "
@@ -153,8 +196,17 @@ def run_crawl(
     if archived:
         bus.log(f"Archived {archived} posting(s) not seen for a while.", stage="ingest")
 
+    incomplete = any(
+        entry["status"] != "complete" for report in stats.coverage.values() for entry in report
+    )
     status = (
-        "failed" if stats.failures and not stats.kept else ("partial" if stats.failures else "ok")
+        "cancelled"
+        if cancelled()
+        else "failed"
+        if stats.failures and not stats.kept
+        else "partial"
+        if stats.failures or incomplete
+        else "ok"
     )
     store.finish_run(run_id, status=status, stats=stats.to_dict())
     return stats
@@ -187,7 +239,18 @@ def ingest_one(raw: RawJob, settings: Settings, stats: CrawlStats) -> tuple[int,
     siblings = store.find_by_company(job.company_norm)
     duplicate_id = find_duplicate(job, siblings, settings.matching.dedupe)
     if duplicate_id is not None:
-        _attach_source(duplicate_id, job)
+        exact = (
+            db.connect()
+            .execute(
+                "SELECT id FROM job WHERE id = ? AND fingerprint = ?",
+                (duplicate_id, job.fingerprint),
+            )
+            .fetchone()
+        )
+        if exact:
+            store.upsert_job(job)
+        else:
+            _attach_source(duplicate_id, job)
         stats.duplicates += 1
         stats.kept += 1
         return duplicate_id, False
@@ -210,6 +273,17 @@ def _attach_source(job_id: int, job: NormalizedJob) -> None:
     description and the earliest posting date win.
     """
     with db.transaction() as conn:
+        conn.execute(
+            "UPDATE job SET partial_description = CASE WHEN length(?) >= length(description) "
+            "THEN ? ELSE partial_description END, "
+            "salary_period = COALESCE(NULLIF(?, ''), salary_period) WHERE id = ?",
+            (
+                job.description,
+                int(bool(job.raw.get("partial_description"))),
+                job.salary_period,
+                job_id,
+            ),
+        )
         conn.execute(
             """
             INSERT INTO job_source (job_id, source_key, source_job_id, url, raw)

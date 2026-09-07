@@ -158,7 +158,7 @@ def upsert_job(job: NormalizedJob) -> tuple[int, bool]:
     """
     conn = db.connect()
     existing = conn.execute(
-        "SELECT id, description, posted_at FROM job WHERE fingerprint = ?", (job.fingerprint,)
+        "SELECT id, description, posted_at, url FROM job WHERE fingerprint = ?", (job.fingerprint,)
     ).fetchone()
 
     with db.transaction() as tx:
@@ -168,8 +168,9 @@ def upsert_job(job: NormalizedJob) -> tuple[int, bool]:
                 INSERT INTO job (
                     fingerprint, title, title_norm, company, company_norm, location,
                     location_norm, country, work_mode, employment, seniority, description,
-                    url, apply_url, posted_at, salary_min, salary_max, salary_currency
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    url, apply_url, posted_at, salary_min, salary_max, salary_currency,
+                    salary_period, partial_description
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     job.fingerprint,
@@ -190,6 +191,8 @@ def upsert_job(job: NormalizedJob) -> tuple[int, bool]:
                     job.salary_min,
                     job.salary_max,
                     job.salary_currency,
+                    job.salary_period,
+                    int(bool(job.raw.get("partial_description"))),
                 ),
             )
             job_id = int(cursor.lastrowid)
@@ -199,18 +202,58 @@ def upsert_job(job: NormalizedJob) -> tuple[int, bool]:
             is_new = False
             # Keep the richest description and the earliest known posting date:
             # aggregators routinely truncate, and a re-listing is not a new job.
+            primary_refresh = bool(
+                job.url
+                and job.url == existing["url"]
+                and not job.raw.get("partial_description")
+                and job.description
+            )
             better_description = (
                 job.description
-                if len(job.description) > len(existing["description"] or "")
+                if primary_refresh or len(job.description) > len(existing["description"] or "")
                 else existing["description"]
             )
             posted = _earliest(existing["posted_at"], job.posted_at)
             tx.execute(
                 "UPDATE job SET description = ?, posted_at = ?, "
                 "apply_url = COALESCE(NULLIF(?, ''), apply_url), "
+                "salary_min = COALESCE(?, salary_min), salary_max = COALESCE(?, salary_max), "
+                "salary_currency = COALESCE(NULLIF(?, ''), salary_currency), "
+                "salary_period = COALESCE(NULLIF(?, ''), salary_period), "
+                "partial_description = CASE WHEN length(?) >= length(description) "
+                "THEN ? ELSE partial_description END, "
                 "last_seen_at = datetime('now'), archived = 0 WHERE id = ?",
-                (better_description, posted, job.apply_url, job_id),
+                (
+                    better_description,
+                    posted,
+                    job.apply_url,
+                    job.salary_min,
+                    job.salary_max,
+                    job.salary_currency,
+                    job.salary_period,
+                    job.description,
+                    int(bool(job.raw.get("partial_description"))),
+                    job_id,
+                ),
             )
+            if primary_refresh:
+                tx.execute(
+                    "UPDATE job SET work_mode = ?, employment = ?, seniority = ?, "
+                    "partial_description = 0 WHERE id = ?",
+                    (job.work_mode, job.employment, job.seniority, job_id),
+                )
+            if primary_refresh or job.salary_min is not None or job.salary_max is not None:
+                tx.execute(
+                    "UPDATE job SET salary_min = ?, salary_max = ?, salary_currency = ?, "
+                    "salary_period = ? WHERE id = ?",
+                    (
+                        job.salary_min,
+                        job.salary_max,
+                        job.salary_currency,
+                        job.salary_period,
+                        job_id,
+                    ),
+                )
 
         tx.execute(
             """
@@ -348,6 +391,8 @@ def match_candidates() -> list[dict[str, Any]]:
                job.work_mode, job.employment, job.seniority, job.description,
                job.url, job.apply_url, job.posted_at, job.first_seen_at,
                job.last_seen_at, job.salary_min, job.salary_max, job.salary_currency,
+               job.salary_period, job.availability, job.checked_at, job.availability_detail,
+               job.partial_description,
                job.hidden, application.status AS application_status,
                COALESCE(sources.keys, '') AS source_keys
         FROM job
@@ -534,20 +579,42 @@ def clear_postings(*, keep_tracked: bool = True) -> dict[str, int]:
 
 
 def set_application(job_id: int, *, status: str, notes: str | None = None) -> dict[str, Any]:
-    applied = "datetime('now')" if status == "applied" else "applied_at"
+    applied = (
+        "COALESCE(application.applied_at, datetime('now'))"
+        if status == "applied"
+        else "application.applied_at"
+    )
     with db.transaction() as conn:
+        previous = conn.execute(
+            "SELECT status, notes FROM application WHERE job_id = ?", (job_id,)
+        ).fetchone()
         conn.execute(
             f"""
-            INSERT INTO application (job_id, status, notes)
-            VALUES (?, ?, COALESCE(?, ''))
+            INSERT INTO application (job_id, status, notes, applied_at)
+            VALUES (?, ?, COALESCE(?, ''), CASE WHEN ? = 'applied' THEN datetime('now') END)
             ON CONFLICT(job_id) DO UPDATE SET
                 status = excluded.status,
                 notes = COALESCE(?, application.notes),
                 applied_at = {applied},
                 updated_at = datetime('now')
             """,
-            (job_id, status, notes, notes),
+            (job_id, status, notes, status, notes),
         )
+        if not previous or previous["status"] != status:
+            conn.execute(
+                "INSERT INTO application_event(job_id, kind, detail) VALUES (?, 'status', ?)",
+                (
+                    job_id,
+                    f"{previous['status'].title()} to {status.title()}"
+                    if previous
+                    else f"Added as {status.title()}",
+                ),
+            )
+        if notes is not None and previous and previous["notes"] != notes:
+            conn.execute(
+                "INSERT INTO application_event(job_id, kind, detail) VALUES (?, 'note', ?)",
+                (job_id, notes or "Notes cleared."),
+            )
     row = db.connect().execute("SELECT * FROM application WHERE job_id = ?", (job_id,)).fetchone()
     return dict(row) if row else {}
 
@@ -806,6 +873,19 @@ def save_tailored(
     docx_path: str = "",
 ) -> int:
     with db.transaction() as conn:
+        base = conn.execute("SELECT raw_text FROM cv WHERE id = ?", (cv_id,)).fetchone()
+        conn.execute(
+            "INSERT INTO resume_version(job_id, cv_id, markdown, base_text, content, prep_sheet) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                job_id,
+                cv_id,
+                markdown,
+                base["raw_text"] if base else "",
+                json.dumps(content),
+                json.dumps(prep_sheet),
+            ),
+        )
         cursor = conn.execute(
             """
             INSERT INTO tailored_cv (job_id, cv_id, content, prep_sheet, markdown, docx_path)

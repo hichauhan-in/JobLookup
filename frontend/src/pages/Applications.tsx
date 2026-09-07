@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import {
   ArrowRight,
   ArrowUpRight,
+  CalendarClock,
   Download,
   MessageSquare,
   Search,
@@ -23,12 +24,14 @@ import {
   Spinner,
 } from "../components/ui";
 import { useToast } from "../components/notifications";
+import { Agenda, ApplicationActivity } from "../components/ApplicationActivity";
 
 export default function Applications() {
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState("all");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [clearOpen, setClearOpen] = useState(false);
+  const [activityId, setActivityId] = useState<number | null>(null);
   const deferredQuery = useDeferredValue(query);
   const notify = useToast();
   const applications = useQuery({
@@ -73,6 +76,7 @@ export default function Applications() {
           <Trash2 size={18} />
         </IconButton>
       </PageHead>
+      <Agenda onOpen={setActivityId} />
       <div className="application-stages" aria-label="Application stages">
         {Object.entries(STAGES).map(([key, name]) => (
           <button
@@ -135,6 +139,7 @@ export default function Applications() {
               key={entry.job_id}
               entry={entry}
               onOpen={() => setSelectedId(entry.job_id)}
+              onActivity={() => setActivityId(entry.job_id)}
             />
           ))}
         </div>
@@ -160,10 +165,16 @@ export default function Applications() {
       {selectedId != null && (
         <JobDetails id={selectedId} onClose={() => setSelectedId(null)} />
       )}
+      {activityId != null && (
+        <ApplicationActivity
+          jobId={activityId}
+          onClose={() => setActivityId(null)}
+        />
+      )}
       {clearOpen && (
         <Confirm
           title="Clear all applications?"
-          detail="This removes your application statuses and notes. The original job postings, resumes, and profile will be kept."
+          detail="This removes application statuses, notes, contacts, follow-ups and timelines. Original postings, resume drafts and your profile will be kept."
           action="Clear applications"
           onClose={() => setClearOpen(false)}
           onConfirm={async () => {
@@ -180,9 +191,11 @@ export default function Applications() {
 function ApplicationRow({
   entry,
   onOpen,
+  onActivity,
 }: {
   entry: Application;
   onOpen: () => void;
+  onActivity: () => void;
 }) {
   const [removeOpen, setRemoveOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
@@ -229,6 +242,12 @@ function ApplicationRow({
         </select>
         <span className="updated-date">{ago(entry.updated_at)}</span>
         <div className="application-actions">
+          <IconButton
+            label={`Activity for ${entry.title}`}
+            onClick={onActivity}
+          >
+            <CalendarClock size={16} />
+          </IconButton>
           <IconButton
             label={`Notes for ${entry.title}`}
             className={entry.notes ? "has-notes" : ""}

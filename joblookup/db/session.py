@@ -12,7 +12,7 @@ import sqlite3
 import struct
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -47,17 +47,40 @@ def db_path(storage_root: Path | None = None) -> Path:
 #: database created before it would break.
 _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("crawl_run", "tokens", "TEXT NOT NULL DEFAULT '{}'"),
+    ("crawl_run", "track_id", "INTEGER REFERENCES search_track(id) ON DELETE SET NULL"),
+    ("job", "salary_period", "TEXT NOT NULL DEFAULT ''"),
+    ("job", "partial_description", "INTEGER NOT NULL DEFAULT 0"),
+    ("job", "availability", "TEXT NOT NULL DEFAULT 'unknown'"),
+    ("job", "checked_at", "TEXT"),
+    ("job", "availability_detail", "TEXT NOT NULL DEFAULT ''"),
+    ("application", "contact_name", "TEXT NOT NULL DEFAULT ''"),
+    ("application", "contact_email", "TEXT NOT NULL DEFAULT ''"),
+    (
+        "application",
+        "submitted_version_id",
+        "INTEGER REFERENCES resume_version(id) ON DELETE SET NULL",
+    ),
 )
 
 
 def apply_schema(path: Path) -> None:
     sql = (package_dir() / "db" / "schema.sql").read_text(encoding="utf-8")
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.executescript(sql)
         for table, column, definition in _ADDED_COLUMNS:
             existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
             if column not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        conn.execute(
+            "INSERT INTO resume_version(job_id, cv_id, markdown, base_text, content, "
+            "prep_sheet, created_at) "
+            "SELECT draft.job_id, draft.cv_id, draft.markdown, cv.raw_text, "
+            "draft.content, draft.prep_sheet, draft.created_at "
+            "FROM tailored_cv AS draft JOIN cv ON cv.id = draft.cv_id "
+            "WHERE draft.markdown != '' AND NOT EXISTS (SELECT 1 FROM resume_version AS version "
+            "WHERE version.job_id = draft.job_id AND version.cv_id = draft.cv_id "
+            "AND version.markdown = draft.markdown)"
+        )
 
 
 def connect(storage_root: Path | None = None) -> sqlite3.Connection:

@@ -29,6 +29,12 @@ PREFERENCE_KEYS = (
     "exclusions",
     "min_salary",
     "salary_currency",
+    "salary_period",
+    "needs_sponsorship",
+    "authorized_countries",
+    "timezone_requirement",
+    "required_keywords",
+    "constraint_modes",
     "notes",
 )
 

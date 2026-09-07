@@ -35,11 +35,13 @@ import { initials } from "./lib/format";
 import type { Task } from "./types";
 import { ErrorState, IconButton, Skeletons, Spinner } from "./components/ui";
 import { useToast } from "./components/notifications";
+import "./workflow.css";
 
 const Matches = lazy(() => import("./pages/Matches"));
 const Applications = lazy(() => import("./pages/Applications"));
 const Profile = lazy(() => import("./pages/Profile"));
 const Settings = lazy(() => import("./pages/Settings"));
+const Capture = lazy(() => import("./pages/Capture"));
 
 export default function Workspace() {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -51,6 +53,7 @@ export default function Workspace() {
     applications: "Applications",
     profile: "Your profile",
     settings: "Settings",
+    capture: "Import job",
   };
   const page = names[location.pathname.split("/")[1]] || "Matches";
   return (
@@ -180,6 +183,7 @@ export default function Workspace() {
                 <Route path="/applications" element={<Applications />} />
                 <Route path="/profile" element={<Profile />} />
                 <Route path="/settings" element={<Settings />} />
+                <Route path="/capture" element={<Capture />} />
                 <Route
                   path="/sources"
                   element={<Navigate to="/settings?tab=sources" replace />}

@@ -54,6 +54,7 @@ from joblookup.paths import ensure_dir, isolated_user_dir, web_dir
 from joblookup.server import schemas
 from joblookup.server.jobs import Job, manager
 from joblookup.services import crawl, profiling, secrets, suggest
+from joblookup.services.scheduled_tracks import queue_due_track
 from joblookup.services.scheduler import Scheduler
 from joblookup.sources import catalogue, regions, registry
 from joblookup.sources.base import as_list
@@ -96,7 +97,7 @@ def _scheduled_search() -> None:
         result: dict[str, Any] = {"crawl": stats.to_dict()}
         try:
             result["match"] = run_matching(
-                settings, client_for(settings), bus, cancelled=job.cancel_requested.is_set
+                settings, None, bus, cancelled=job.cancel_requested.is_set
             )
         except ProfileMissing as exc:
             bus.warn(str(exc), stage="score")
@@ -105,7 +106,9 @@ def _scheduled_search() -> None:
     manager.submit("search", work, label="Scheduled search")
 
 
-_scheduler = Scheduler(current_settings, _scheduled_search)
+_scheduler = Scheduler(
+    current_settings, _scheduled_search, lambda: queue_due_track(current_settings())
+)
 
 
 # --- hosted mode -------------------------------------------------------------
@@ -283,13 +286,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     _register_routes(app)
 
+    from joblookup.server.backups import build_router as backup_router
+    from joblookup.server.capture import build_router as capture_router
     from joblookup.server.connections import build_router as connection_router
     from joblookup.server.portals import build_router as portal_router
     from joblookup.server.workbench import build_router
+    from joblookup.server.workflow import build_router as workflow_router
 
     app.include_router(build_router(current_settings))
     app.include_router(connection_router(current_settings, reload_settings))
     app.include_router(portal_router(current_settings, reload_settings))
+    app.include_router(workflow_router(current_settings))
+    app.include_router(capture_router(current_settings))
+    app.include_router(backup_router(current_settings))
 
     web = web_dir()
     if web.is_dir():

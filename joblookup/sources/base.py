@@ -150,6 +150,8 @@ class FetchContext:
     secret: Callable[[str], str] = lambda name: ""
     log: Callable[[str], None] = lambda message: None
     cancelled: Callable[[], bool] = lambda: False
+    search_report: list[dict[str, Any]] = field(default_factory=list)
+    stop_reason: str = ""
 
     @property
     def recency_days(self) -> int:
@@ -293,6 +295,7 @@ class SourceAdapter(ABC):
         headers: dict[str, str] | None = None,
         method: str = "GET",
         json_body: Any = None,
+        allow_statuses: frozenset[int] | set[int] = frozenset(),
     ) -> httpx.Response:
         search = context.settings.search
         merged = {
@@ -333,6 +336,8 @@ class SourceAdapter(ABC):
                         following.headers.pop(secret_header, None)
                 outgoing = following
 
+        if response.status_code in allow_statuses:
+            return response
         if response.status_code == 429:
             raise SourceError(
                 f"{self.name} is rate limiting us. Raise search.min_request_interval_s "

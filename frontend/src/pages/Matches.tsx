@@ -13,6 +13,9 @@ import {
   Clock3,
   EyeOff,
   History,
+  Inbox,
+  CheckCheck,
+  Import,
   MapPin,
   RotateCcw,
   Search,
@@ -26,6 +29,7 @@ import {
   post,
   refreshWorkspace,
   request,
+  useTracks,
   useWorkspace,
 } from "../api";
 import { ago, companyColor, initials, label, salary } from "../lib/format";
@@ -42,6 +46,8 @@ import {
   Spinner,
 } from "../components/ui";
 import { useToast } from "../components/notifications";
+import { SearchTracks } from "../components/SearchTracks";
+import { DailyBrief } from "../components/DailyBrief";
 
 export default function Matches() {
   const [params, setParams] = useSearchParams();
@@ -49,10 +55,13 @@ export default function Matches() {
   const [resetOpen, setResetOpen] = useState(false);
   const workspace = useWorkspace();
   const notify = useToast();
-  const profile = workspace.data?.profile.data;
+  const tracks = useTracks();
+  const trackId = Math.max(0, Number(params.get("track") || 0));
+  const track = tracks.data?.items.find((entry) => entry.id === trackId);
+  const profile = { ...workspace.data?.profile.data, ...track?.preferences };
   const query = params.get("q") || "";
   const deferredQuery = useDeferredValue(query);
-  const view = ["recommended", "review", "all", "hidden"].includes(
+  const view = ["recommended", "review", "all", "hidden", "inbox"].includes(
     params.get("view") || "",
   )
     ? params.get("view")!
@@ -82,6 +91,7 @@ export default function Matches() {
     );
   const search = new URLSearchParams({
     view,
+    track_id: String(trackId),
     query: deferredQuery,
     days: String(days),
     mode,
@@ -102,7 +112,8 @@ export default function Matches() {
     enabled: filtersOpen,
   });
   const discover = useMutation({
-    mutationFn: () => post<{ task: Task }>("/discover", { days }),
+    mutationFn: () =>
+      post<{ task: Task }>("/discover", { days, track_id: trackId }),
     onSuccess: async () => {
       notify("Search started.");
       await refreshWorkspace();
@@ -110,6 +121,15 @@ export default function Matches() {
     onError: (error) => notify(errorMessage(error), "error"),
   });
   const totals = matches.data?.buckets;
+  const markPage = useMutation({
+    mutationFn: () =>
+      post("/inbox/seen", {
+        track_id: trackId,
+        job_ids: matches.data?.items.map((job) => job.id) || [],
+      }),
+    onSuccess: () => refreshWorkspace(),
+    onError: (error) => notify(errorMessage(error), "error"),
+  });
   const isSearching =
     discover.isPending ||
     workspace.data?.tasks.some((task) => task.kind === "search");
@@ -132,6 +152,10 @@ export default function Matches() {
           )
         }
       >
+        <Link className="button secondary" to="/capture">
+          <Import size={16} />
+          Import job
+        </Link>
         <Link className="button secondary" to="/settings?tab=history">
           <History size={16} />
           History
@@ -145,6 +169,18 @@ export default function Matches() {
           {isSearching ? "Searching" : "Find jobs"}
         </button>
       </PageHead>
+      <SearchTracks
+        value={trackId}
+        onChange={(id) =>
+          change({
+            track: id ? String(id) : "",
+            job: "",
+            days: "",
+            source: "",
+            mode: "",
+          })
+        }
+      />
       {workspace.isError && (
         <ErrorState
           error={workspace.error}
@@ -260,6 +296,7 @@ export default function Matches() {
                 onChange={(event) => change({ source: event.target.value })}
               >
                 <option value="">Every source</option>
+                <option value="manual">Imported postings</option>
                 {sources.data?.sources.map((item) => (
                   <option key={item.key} value={item.key}>
                     {item.name}
@@ -267,7 +304,12 @@ export default function Matches() {
                 ))}
               </select>
             </label>
-            <button className="button text small" onClick={() => setParams({})}>
+            <button
+              className="button text small"
+              onClick={() =>
+                change({ q: "", days: "", mode: "", source: "", sort: "" })
+              }
+            >
               <RotateCcw size={14} />
               Reset filters
             </button>
@@ -280,6 +322,7 @@ export default function Matches() {
         <div className="results-heading">
           <nav className="tabs" aria-label="Match views">
             {[
+              { key: "inbox", name: "New & changed" },
               { key: "recommended", name: "Recommended" },
               { key: "review", name: "Needs review" },
               { key: "all", name: "All postings" },
@@ -290,14 +333,27 @@ export default function Matches() {
                 aria-current={view === item.key ? "page" : undefined}
                 onClick={() => change({ view: item.key })}
               >
+                {item.key === "inbox" && <Inbox size={15} />}
                 {item.name}
                 <span>
-                  {totals?.[item.key as "recommended" | "review" | "all"] ?? 0}
+                  {totals?.[
+                    item.key as "recommended" | "review" | "all" | "inbox"
+                  ] ?? 0}
                 </span>
               </button>
             ))}
           </nav>
           <div className="results-tools">
+            {view === "inbox" && <DailyBrief trackId={trackId} />}
+            {view === "inbox" && (
+              <IconButton
+                label="Mark this page as reviewed"
+                disabled={markPage.isPending || !matches.data?.items.length}
+                onClick={() => markPage.mutate()}
+              >
+                <CheckCheck size={17} />
+              </IconButton>
+            )}
             {matches.isFetching && !matches.isPending && (
               <Spinner label="Updating results" />
             )}
@@ -356,7 +412,9 @@ export default function Matches() {
             title={
               view === "recommended"
                 ? "No verified matches yet"
-                : "Nothing in this view"
+                : view === "inbox"
+                  ? "You're up to date"
+                  : "Nothing in this view"
             }
             detail={
               view === "recommended" && totals?.review
@@ -375,7 +433,7 @@ export default function Matches() {
             )}
             <button
               className="button secondary"
-              onClick={() => setParams({ view: "all", days: "365" })}
+              onClick={() => change({ view: "all", days: "365" })}
             >
               All stored postings
             </button>
@@ -422,7 +480,10 @@ export default function Matches() {
       </section>
       {selectedId > 0 && (
         <JobDetails
+          key={`${selectedId}-${trackId}`}
           id={selectedId}
+          trackId={trackId}
+          defaultCv={track?.cv_id}
           onClose={() => change({ job: "" }, false)}
         />
       )}

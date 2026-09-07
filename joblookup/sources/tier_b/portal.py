@@ -25,6 +25,7 @@ from joblookup.sources.base import (
     as_list,
 )
 from joblookup.sources.normalize import parse_date
+from joblookup.sources.search_plan import execute_plan
 from joblookup.sources.tier_b import browser
 from joblookup.sources.tier_b.access import (
     AUTHENTICATED_MARKERS,
@@ -140,8 +141,8 @@ class PortalAdapter(SourceAdapter):
             browser.check_daily_cap(settings, self.key)
             browser.record_run(self.key)
             if context.config.get("access_mode", "session") == "public":
-                return self.fetch_public(context)
-            return self.fetch_session(context)
+                return execute_plan(context, self.fetch_public)
+            return execute_plan(context, self.fetch_session)
 
     def fetch_public(self, context: FetchContext) -> list[RawJob]:
         if context.cancelled():
@@ -163,6 +164,7 @@ class PortalAdapter(SourceAdapter):
                 detail_response = self.request(context, job.url, headers={"accept": "text/html"})
                 details = posting_details(detail_response.text, str(detail_response.url))
             except (SourceError, TierBBlocked) as exc:
+                context.stop_reason = str(exc)
                 context.log(
                     f"{self.name}: full descriptions unavailable; keeping listing summaries. {exc}"
                 )

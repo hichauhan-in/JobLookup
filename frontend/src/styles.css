@@ -820,27 +820,27 @@ textarea:focus {
 }
 .color-0 {
   background: #edf2e9;
-  color: #6a8050;
+  color: #506636;
 }
 .color-1 {
   background: #eaf0f9;
-  color: #526e97;
+  color: #435e87;
 }
 .color-2 {
   background: #fcf0e9;
-  color: #ae714f;
+  color: #895332;
 }
 .color-3 {
   background: #f7ebf2;
-  color: #936780;
+  color: #80516d;
 }
 .color-4 {
   background: #e8f2f1;
-  color: #538780;
+  color: #32665f;
 }
 .color-5 {
   background: #f5f0e7;
-  color: #978051;
+  color: #776132;
 }
 .job-title {
   border: 0;
@@ -1693,7 +1693,7 @@ dialog::backdrop {
 .stage-picker {
   font-size: 12px;
   min-height: 35px;
-  color: #5d896c;
+  color: #386546;
   padding: 6px 8px;
   width: 143px;
   background: #fafcf8;

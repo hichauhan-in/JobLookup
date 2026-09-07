@@ -22,6 +22,14 @@ export type Profile = {
   links?: string[];
   email?: string;
   notes?: string;
+  min_salary?: number;
+  salary_currency?: string;
+  salary_period?: string;
+  needs_sponsorship?: boolean;
+  authorized_countries?: string[];
+  timezone_requirement?: string;
+  required_keywords?: string[];
+  constraint_modes?: Record<string, "required" | "preferred" | "any">;
 };
 export type Resume = {
   id: number;
@@ -60,6 +68,26 @@ export type Run = {
     too_old?: number;
     by_source?: Record<string, number>;
     failures?: Record<string, string>;
+    coverage?: Record<
+      string,
+      {
+        query: string;
+        location: string;
+        status: string;
+        count: number;
+        reason?: string;
+      }[]
+    >;
+    quality?: Record<
+      string,
+      {
+        fetched: number;
+        full_description: number;
+        relevant: number;
+        kept: number;
+        new: number;
+      }
+    >;
   };
 };
 export type Workspace = {
@@ -84,7 +112,8 @@ export type Fit = {
   engine: string;
   target_role: string;
   method: string;
-  matched_skills: { skill: string; quote: string }[];
+  matched_skills: { skill: string; quote: string; importance?: string }[];
+  requirements?: { skill: string; quote: string; importance: string }[];
   other_skills: string[];
   criteria: {
     key: string;
@@ -121,6 +150,11 @@ export type Opportunity = {
   sources?: { source_key: string; url: string; seen_at: string }[];
   application_status: string | null;
   application_notes?: string;
+  salary_period?: string;
+  availability?: string;
+  checked_at?: string;
+  availability_detail?: string;
+  inbox_state?: "new" | "changed" | "seen";
 };
 export type Opportunities = {
   items: Opportunity[];
@@ -134,6 +168,7 @@ export type Opportunities = {
     excluded: number;
     hidden: number;
     all: number;
+    inbox: number;
   };
   has_profile: boolean;
   profile_version: number;
@@ -233,4 +268,38 @@ export type BridgeModels = {
   default_model: string;
   available: boolean;
   detail: string;
+};
+
+export type SearchTrack = {
+  id: number;
+  name: string;
+  preferences: Profile;
+  sources: string[];
+  cv_id: number | null;
+  schedule_enabled: boolean;
+  schedule_hour: number;
+  schedule_minute: number;
+  schedule_weekdays: number[];
+  last_slot: string;
+};
+export type Feedback = {
+  label: "relevant" | "adjacent" | "irrelevant";
+  reason: string;
+  notes: string;
+};
+export type NextAction = {
+  id: number;
+  job_id: number;
+  title: string;
+  job_title?: string;
+  company?: string;
+  kind: string;
+  due_at: string;
+  done_at: string | null;
+};
+export type ResumeVersion = {
+  id: number;
+  cv_id: number;
+  cv_label: string;
+  created_at: string;
 };

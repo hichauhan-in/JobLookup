@@ -74,6 +74,46 @@ def test_java_is_not_evidenced_by_javascript():
     assert skill_evidence("Build JavaScript applications", "Java") is None
 
 
+def test_negated_skill_is_not_a_requirement():
+    assert skill_evidence("No Java experience is required; Python is essential.", "Java") is None
+
+
+def test_negation_of_other_experience_does_not_suppress_a_skill():
+    assert skill_evidence("Python skills with no prior management experience required.", "Python")
+    assert skill_evidence("Java experience is not required.", "Java") is None
+
+
+def test_mixed_requirement_importance_and_headings_are_local():
+    from joblookup.matching.evidence import skill_requirement
+
+    text = "Python is required, Java is preferred."
+    assert skill_requirement(text, "Python")["importance"] == "required"
+    assert skill_requirement(text, "Java")["importance"] == "optional"
+    assert (
+        skill_requirement("Required skills:\n- Python\n- Java", "Java")["importance"] == "required"
+    )
+    assert skill_requirement("Nice to have:\n- Python", "Python")["importance"] == "optional"
+
+
+def test_adjacent_support_roles_are_not_discarded_for_wording():
+    assert role_fit("Cloud Support Engineer", ["Escalation Engineer"])[0] >= 0.7
+
+
+def test_management_and_individual_contributor_roles_are_distinct():
+    assert role_fit("Security Analyst", ["Security Manager"])[0] < 0.34
+
+
+def test_optional_skills_count_less_than_required_skills():
+    candidate = profile() | {"skills": [{"name": "Python"}]}
+    required = evaluate_job(
+        posting(description="Python is required. Java is required. " * 5), candidate
+    )
+    optional = evaluate_job(
+        posting(description="Python is required. Java is nice to have. " * 5), candidate
+    )
+    assert optional["score"] > required["score"]
+
+
 def test_cplusplus_is_not_evidenced_by_csharp():
     assert skill_evidence("Experience in C# and .NET", "C++") is None
 
@@ -88,6 +128,10 @@ def test_no_profile_does_not_produce_recommendations():
 
 def test_incomplete_descriptions_require_review():
     assert evaluate_job(posting(description="Azure"), profile())["band"] == "review"
+
+
+def test_long_listing_summaries_still_require_review():
+    assert evaluate_job(posting(partial_description=True), profile())["band"] == "review"
 
 
 def test_title_alone_is_not_a_recommendation_without_skill_evidence():
@@ -129,6 +173,76 @@ def test_work_mode_and_employment_preferences_are_binding():
     candidate = profile() | {"employment_types": ["full-time"]}
     assert evaluate_job(posting(work_mode="onsite"), candidate)["band"] == "excluded"
     assert evaluate_job(posting(employment="contract"), candidate)["band"] == "excluded"
+
+
+def test_sponsorship_must_be_explicit_and_unknown_is_not_rejected():
+    candidate = profile() | {"needs_sponsorship": True}
+    assert evaluate_job(posting(), candidate)["band"] == "review"
+    assert (
+        evaluate_job(
+            posting(description=posting()["description"] + " No visa sponsorship."), candidate
+        )["band"]
+        == "excluded"
+    )
+    assert (
+        evaluate_job(
+            posting(description=posting()["description"] + " Visa sponsorship available."),
+            candidate,
+        )["band"]
+        == "strong"
+    )
+
+
+def test_salary_requires_matching_units_and_currency():
+    candidate = profile() | {
+        "min_salary": 100000,
+        "salary_currency": "USD",
+        "salary_period": "year",
+    }
+    assert (
+        evaluate_job(
+            posting(salary_max=90000, salary_currency="USD", salary_period="year"), candidate
+        )["band"]
+        == "excluded"
+    )
+    assert (
+        evaluate_job(
+            posting(salary_max=90000, salary_currency="INR", salary_period="year"), candidate
+        )["band"]
+        == "review"
+    )
+    assert (
+        evaluate_job(
+            posting(salary_max=120000, salary_currency="USD", salary_period="year"), candidate
+        )["band"]
+        == "strong"
+    )
+
+
+def test_preferences_can_be_relaxed_without_changing_strict_defaults():
+    candidate = profile() | {
+        "constraint_modes": {"work_mode": "preferred", "location": "preferred"}
+    }
+    assert evaluate_job(
+        posting(work_mode="onsite", location="London, UK", country="GB"), candidate
+    )["eligible"]
+
+
+def test_confirmed_closed_postings_are_excluded():
+    assert not evaluate_job(posting(availability="closed"), profile())["eligible"]
+
+
+def test_minimum_only_salary_does_not_invent_an_upper_limit():
+    candidate = profile() | {
+        "min_salary": 100000,
+        "salary_currency": "USD",
+        "salary_period": "year",
+    }
+    result = evaluate_job(
+        posting(salary_min=90000, salary_currency="USD", salary_period="year"), candidate
+    )
+    assert result["eligible"]
+    assert result["band"] == "review"
 
 
 def test_pipeline_does_not_call_a_provider(database):

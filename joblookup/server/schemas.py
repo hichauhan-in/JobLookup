@@ -6,7 +6,7 @@ only consumer and a second definition of every field would go stale.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -85,8 +85,14 @@ class ProfilePatch(BaseModel):
     recency_days: int | None = None
     work_authorization: str | None = None
     exclusions: list[str] | None = None
-    min_salary: float | None = None
+    min_salary: float | None = Field(default=None, ge=0, le=1_000_000_000)
     salary_currency: str | None = None
+    salary_period: Literal["hour", "day", "week", "month", "year"] | None = None
+    needs_sponsorship: bool | None = None
+    authorized_countries: list[str] | None = Field(default=None, max_length=20)
+    timezone_requirement: str | None = Field(default=None, max_length=120)
+    required_keywords: list[str] | None = Field(default=None, max_length=20)
+    constraint_modes: dict[str, Literal["required", "preferred", "any"]] | None = None
     notes: str | None = None
     #: Direct edits to the merged profile, for fixing a bad extraction.
     headline: str | None = None
